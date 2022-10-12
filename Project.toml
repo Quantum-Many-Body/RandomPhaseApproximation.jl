@@ -1,0 +1,7 @@
+name = "RandomPhaseApproximation"
+uuid = "b76368a9-c21b-4c44-a110-0e9f579e383e"
+authors = ["wwangnju <wwangnju@163.com> and contributors"]
+version = "0.1.0"
+
+[compat]
+julia = "1.8"
