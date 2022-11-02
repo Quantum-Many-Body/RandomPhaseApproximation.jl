@@ -129,8 +129,8 @@ antirpa2 = Algorithm(:dAFM, rpa2);
 tespm2 = antirpa2(:chipm, phs);
 
 #plot spectrum of longitudinal spin excitation
-plt = plot(
-    tespm, 
+plot(
+    tespm2, 
     xticks=(
         [0, 16/2, 32/2, 48/2, 64/2+1],
         ["(0,0)",  "(π,0)","(π,π)","(0,0)"]
