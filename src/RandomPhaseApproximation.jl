@@ -2,9 +2,9 @@ module RandomPhaseApproximation
 using Distributed: @distributed 
 using QuantumLattices: ID, MatrixRepresentation, Operator, Operators, RepresentationGenerator, rank, creation, annihilation, CompositeIndex, Frontend, Hilbert, Term, Neighbors, Boundary, plain
 using QuantumLattices: OperatorUnitToTuple, Table, OperatorGenerator, bonds, expand, kind, dimension, ReciprocalPath, ReciprocalZone, Action, Algorithm, Assignment
-using QuantumLattices:  kind, dimension, AbstractLattice
-import QuantumLattices: add!, matrix, update!, Parameters, initialize, run!
-using TightBindingApproximation: AbstractTBA, TBA, Fermionic
+using QuantumLattices:  kind, AbstractLattice, AnalyticalExpression
+import QuantumLattices: add!, matrix, update!, Parameters, initialize, run!, dimension
+using TightBindingApproximation: AbstractTBA, TBA, Fermionic, TBAKind
 using LinearAlgebra: diagm, eigen, Hermitian, cholesky, I, dot, NoPivot
 using SharedArrays: SharedArray
 using DelimitedFiles: writedlm
@@ -13,6 +13,12 @@ using RecipesBase: RecipesBase, @recipe, @series
 
 export RPA, EigenRPA, chiq, chikqm, chiq0, correlation, findk, projchi, projchiim, fermifunc
 export PHVertexRepresentation, isevenperm, issamesite, ParticleHoleSusceptibility, selectpath
+
+# fix bug for TightBindingApproximation
+using QuantumLattices: getcontent
+@inline dimension(tba::AbstractTBA{<:TBAKind, <:AnalyticalExpression}) = dimension(getfield(getcontent(tba, :H), :expression))
+#
+
 
 """
     isevenperm(p::Vector) -> Bool
@@ -141,14 +147,37 @@ struct RPA{L<:AbstractTBA, U<:RepresentationGenerator} <: Frontend
 end
 @inline Parameters(rpa::RPA) = Parameters{(keys(Parameters(rpa.tba))...,keys(Parameters(rpa.U))...)}((Parameters(rpa.tba))...,(Parameters(rpa.U))... )
 """
-    RPA(tba::AbstractTBA, uterms::Tuple{Vararg{Term}})
-    RPA(lattice::AbstractLattice, hilbert::Hilbert, terms::Tuple{Vararg{Term}}, uterms::Tuple{Vararg{Term}}; neighbors::Union{Nothing, Int, Neighbors}=nothing, boundary::Boundary=plain)
+    RPA(
+        tba::AbstractTBA{K, <:OperatorGenerator}, 
+        uterms::Tuple{Vararg{Term}}
+    ) where {K<:TBAKind}
+    RPA(
+        lattice::AbstractLattice, 
+        hilbert::Hilbert, 
+        terms::Tuple{Vararg{Term}}, 
+        uterms::Tuple{Vararg{Term}}; 
+        neighbors::Union{Nothing, Int, Neighbors}=nothing, 
+        boundary::Boundary=plain
+    )   
+    RPA(
+        tba::AbstractTBA{K, <:AnalyticalExpression}, 
+        hilbert::Hilbert, 
+        table::Table, 
+        uterms::Tuple{Vararg{Term}}; 
+        neighbors::Union{Nothing, Int, Neighbors}=nothing, 
+        boundary::Boundary=plain
+    ) where {K<:TBAKind}
 
 Construct a `RPA` type.
 """
-function RPA(tba::AbstractTBA, uterms::Tuple{Vararg{Term}})
+function RPA(tba::AbstractTBA{<:TBAKind, <:OperatorGenerator}, uterms::Tuple{Vararg{Term}})
     table = Table(tba.H.hilbert, OperatorUnitToTuple(:site, :orbital, :spin))
     u = OperatorGenerator(uterms, tba.H.bonds, tba.H.hilbert; half=false, table=table, boundary=tba.H.operators.boundary)
+    return RPA(tba, u)
+end
+function RPA(tba::AbstractTBA{<:TBAKind, <:AnalyticalExpression}, hilbert::Hilbert, table::Table, uterms::Tuple{Vararg{Term}}; neighbors::Union{Nothing, Int, Neighbors}=nothing, boundary::Boundary=plain)
+    # table = Table(hilbert, OperatorUnitToTuple(:site, :orbital, :spin))
+    u = OperatorGenerator(uterms, bonds(tba.lattice, neighbors), hilbert; half=false, table=table, boundary=boundary)
     return RPA(tba, u)
 end
 function RPA(lattice::AbstractLattice, hilbert::Hilbert, terms::Tuple{Vararg{Term}}, uterms::Tuple{Vararg{Term}}; neighbors::Union{Nothing, Int, Neighbors}=nothing, boundary::Boundary=plain)
@@ -227,7 +256,7 @@ function run!(rpa::Algorithm{<:RPA}, ins::Assignment{<:ParticleHoleSusceptibilit
         eigenvc = zeros(ComplexF64, ndim, ndim, nk)
         eigenval = zeros(Float64, ndim, nk)
         for (i, k) in enumerate(ins.action.bz)
-            F = eigen(matrix(tba, k=k, gauge=:icoordinate)) 
+            F = eigen(matrix(tba; k=k, gauge=:icoordinate)) 
             eigenval[:, i] = F.values
             eigenvc[:, :, i] = F.vectors
         end
@@ -237,7 +266,7 @@ function run!(rpa::Algorithm{<:RPA}, ins::Assignment{<:ParticleHoleSusceptibilit
     end 
     savetag = get(ins.action.options, :save, false)
     filename = get(ins.action.options, :filename, "chi")
-    savetag && (serialize(join([filename,"0"]), χ₀))
+    savetag && (serialize(join([filename, "0"]), χ₀))
     if kloc == true 
         gauge₁ = :rcoordinate
     else
@@ -329,8 +358,8 @@ end
 Return chi0(k,q)_{ij,mn}= chi0(k,q)_{-+,+-}, chi0(k,q)_{12,34}== <c^\\dagger_{k,2}c_{k-q ,1}c^\\dagger_{k-q,3}c_{k,4}> 
 """
 function _chikq0(tba::AbstractTBA, k::AbstractVector, q::AbstractVector, omega::Float64; eta::Float64=0.01, tem::Float64=1e-12, mu::Float64=0.0, kwargs...)
-    Fk = eigen(Hermitian(matrix(tba; k = k, kwargs...)))
-    Fkq = eigen(Hermitian(matrix(tba; k = k-q, kwargs...)))
+    Fk = eigen(Hermitian(matrix(tba; k=k, kwargs...)))
+    Fkq = eigen(Hermitian(matrix(tba; k=k-q, kwargs...)))
     n = length(Fk.values)
     Ek = Fk.values
     Ekq = Fkq.values
@@ -340,14 +369,14 @@ function _chikq0(tba::AbstractTBA, k::AbstractVector, q::AbstractVector, omega::
 end
 
 function _chikqsc0(tba::AbstractTBA, k::AbstractVector, q::AbstractVector, omega::Float64; eta::Float64=0.01, tem::Float64=1e-12, mu::Float64=0.0, kwargs...)
-    Fk = eigen(Hermitian(matrix(tba; k = k, kwargs...)))
-    Fkq = eigen(Hermitian(matrix(tba; k = k-q, kwargs...)))
+    Fk = eigen(Hermitian(matrix(tba; k=k, kwargs...)))
+    Fkq = eigen(Hermitian(matrix(tba; k=k-q, kwargs...)))
     n = length(Fk.values)
     @assert mod(n, 2) == 0 "chikqsc0 error: even dimension for Hamiltonian"
     m = n ÷ 2
     Ek = Fk.values
     Ekq = Fkq.values
-    temp = diagm([ ( fermifunc(Ek[i], tem, mu) - fermifunc(Ekq[j], tem, mu) ) / ( omega + eta*im + Ek[i] - Ekq[j] ) for i=1:n for j = 1:n])
+    temp = diagm([ (fermifunc(Ek[i], tem, mu) - fermifunc(Ekq[j], tem, mu)) / ( omega + eta*im + Ek[i] - Ekq[j] ) for i=1:n for j = 1:n])
     uk = Fk.vectors[1:m, :]
     vk = Fk.vectors[m+1:n, :]
     ukq = Fkq.vectors[1:m, :]

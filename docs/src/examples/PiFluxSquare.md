@@ -21,7 +21,7 @@ using TightBindingApproximation: EnergyBands
 lattice = Lattice(
     [0.0, 0.0], [1.0,0.0];
     vectors=[[1.0, 1.0], [-1.0, 1.0]]
-    )
+)
 
 b₁, b₂ = lattice.reciprocals[1], lattice.reciprocals[2]
 hilbert = Hilbert(pid=>Fock{:f}(1, 2) for pid in 1:length(lattice))
@@ -35,8 +35,8 @@ t1 = Hopping(
         ϕ = azimuth(rcoordinate(x));
         any(≈(ϕ), (0,π)) && return x[1].site == 1 && x[2].site==2 ? exp(1im*π/4) : exp(-1im*π/4) ; 
         any(≈(ϕ), (π/2, 3π/2)) && return x[1].site == 1 && x[2].site==2 ? exp(-1im*π/4) : exp(1im*π/4)
-        )
     )
+)
  
 U = Hubbard(:U, 1.6)
 mx = MatrixCoupling(:, FID, :, σ"x", :)
@@ -54,7 +54,7 @@ path, = selectpath(
     [(b₁*0, b₁), (b₁, b₂)],
     bz;
     ends=[false,true]
-    )
+)
 pltpath = plot(bz, path)
 #display(pltpath)
 ```
@@ -75,7 +75,7 @@ phs = ParticleHoleSusceptibility(
     η=0.02,
     gauge=:rcoordinate, 
     save=false
-    )
+)
 
 #define action of longitudinal spin-spin susceptibility
 phsz = ParticleHoleSusceptibility(
@@ -85,7 +85,7 @@ phsz = ParticleHoleSusceptibility(
     ([sz], [sz]); 
     η=0.02,
     findk=true
-    )
+)
 antirpa = Algorithm(:PiAFM, rpa);
 tespm = antirpa(:chipm, phs);
 teszz = antirpa(:chizz, phsz)
@@ -96,9 +96,9 @@ plt1 = plot(
     xticks=(
         [0, 6, 12, 18, 25],
         ["(0,0)", "(π/2,π/2)", "(π,π)","(0,π)","(-π,π)"]
-        ),
+    ),
     clims=(0,5)
-    )
+)
 #display(plt1)
 ```
 The bare spin-spin correlation function is shown as follow.
@@ -110,9 +110,9 @@ plt2 = plot(
     xticks=(
         [0, 6, 12, 18, 25],
         ["(0,0)", "(π/2,π/2)", "(π,π)","(0,π)","(-π,π)"]
-        ),
+    ),
     clims=(0,5)
-    )
+)
 #display(plt2)
 ```
 
@@ -123,9 +123,9 @@ plt3 = plot(
     xticks=(
         [0, 6, 12, 18, 25],
         ["(0,0)", "(π/2,π/2)", "(π,π)","(0,π)","(-π,π)"]
-        ),
+    ),
     clims=(0,5)
-    )
+)
 #display(plt3)
 ```
 ## Energy bands
@@ -136,14 +136,14 @@ pathek = ReciprocalPath{:k}(
     (0//2, 0//2)=>(2//2, 0//2), 
     (2//2, 0//2)=>(0//2, 2//2), 
     length=50
-    )
+)
 etba = Algorithm(:SquareAFM, rpa.tba )(:band, EnergyBands(pathek))
 plt = plot(
     etba, 
     xticks=(
         [0, 25, 50, 75, 100], 
         ["(0,0)", "(π/2,π/2)", "(π,π)","(0,π)","(-π,π)"]
-        )
     )
+)
 #display(plt)
 ```
