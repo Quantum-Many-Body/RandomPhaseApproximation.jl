@@ -15,7 +15,7 @@ TightBindingApproximation = "d3576f78-cb9d-4774-9dc5-b247cf392ff4"
 
 [compat]
 julia = "1.8"
-QuantumLattices = "0.9.2"
-TightBindingApproximation = "0.1.14"
+QuantumLattices = "0.9.3"
+TightBindingApproximation = "0.1.15"
 RecipesBase = "1"
 

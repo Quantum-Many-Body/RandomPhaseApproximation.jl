@@ -23,7 +23,7 @@ lattice = Lattice(
     vectors=[[1.0, 1.0], [-1.0, 1.0]]
 )
 
-b₁, b₂ = lattice.reciprocals[1], lattice.reciprocals[2]
+b₁, b₂ = reciprocals(lattice)
 hilbert = Hilbert(pid=>Fock{:f}(1, 2) for pid in 1:length(lattice))
 
 #define pi-flux tight-binding model
@@ -49,7 +49,7 @@ rpa = RPA(lattice, hilbert, (t1, mzz), (U, ); neighbors=1)
 
 #define Brillouin zone and the high-symmetry path in the reciprocal zone.
 nx, ny= 12, 12
-bz = ReciprocalZone(lattice.reciprocals, Segment(0, 1, nx), Segment(0//2, 2//2, ny))
+bz = ReciprocalZone(reciprocals(lattice), Segment(0, 1, nx), Segment(0//2, 2//2, ny))
 path, = selectpath(
     [(b₁*0, b₁), (b₁, b₂)],
     bz;
@@ -132,7 +132,7 @@ plt3 = plot(
 ```@example piflux
 #define path in the BZ.
 pathek = ReciprocalPath{:k}(
-    lattice.reciprocals, 
+    reciprocals(lattice), 
     (0//2, 0//2)=>(2//2, 0//2), 
     (2//2, 0//2)=>(0//2, 2//2), 
     length=50

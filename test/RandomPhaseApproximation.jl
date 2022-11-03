@@ -2,7 +2,7 @@ using QuantumLattices: Lattice, Hilbert, Fock, Hubbard, InterOrbitalInterSpin, I
 using QuantumLattices: OperatorGenerator, plain, OperatorUnitToTuple, Table, bonds, expand
 using QuantumLattices: CompositeIndex, Index, FID, Parameters
 using QuantumLattices: MatrixCoupling, @σ_str, Coulomb, Hopping, Segment, ReciprocalZone, ReciprocalPath, Onsite, Algorithm
-using QuantumLattices: icoordinate, update!
+using QuantumLattices: icoordinate, update!, reciprocals
 using LinearAlgebra: dot
 using RandomPhaseApproximation
 using Plots: plot, plot!, savefig
@@ -20,7 +20,7 @@ lattice = Lattice(
     [0.0, 0.0], [1/(sqrt(3)),0.0];
     vectors = [[sqrt(3)/2, -0.50], [0.0, 1.0]],
     )
-b₁, b₂ = lattice.reciprocals[1], lattice.reciprocals[2]
+b₁, b₂ = reciprocals(lattice)
 hilbert = Hilbert(pid=>Fock{:f}(1, 2) for pid in 1:length(lattice))
 UU = 1.0
 U = Hubbard(:U, UU)
@@ -66,7 +66,7 @@ sy = expand(Onsite(:sy, 1.0+0.0im, 1/2*mx-0.5im*my), bonds(lattice, 2), hilbert,
 sz = expand(Onsite(:sz, 1.0+0.0im, 1/2*mz), bonds(lattice, 2), hilbert, half=false) 
 
 nx, ny= 6, 6
-bz = ReciprocalZone(lattice.reciprocals, Segment(0, 1, nx), Segment(0//2, 2//2, ny))
+bz = ReciprocalZone(reciprocals(lattice), Segment(0, 1, nx), Segment(0//2, 2//2, ny))
 path, = selectpath([(b₁*0, b₁), (b₁, b₂-b₁)],
     bz;
     ends=[false, true]

@@ -2,8 +2,8 @@ module RandomPhaseApproximation
 using Distributed: @distributed 
 using QuantumLattices: ID, MatrixRepresentation, Operator, Operators, RepresentationGenerator, rank, creation, annihilation, CompositeIndex, Frontend, Hilbert, Term, Neighbors, Boundary, plain
 using QuantumLattices: OperatorUnitToTuple, Table, OperatorGenerator, bonds, expand, kind, dimension, ReciprocalPath, ReciprocalZone, Action, Algorithm, Assignment
-using QuantumLattices:  kind, AbstractLattice, AnalyticalExpression
-import QuantumLattices: add!, matrix, update!, Parameters, initialize, run!, dimension
+using QuantumLattices:  kind, AbstractLattice, AnalyticalExpression, dimension
+import QuantumLattices: add!, matrix, update!, Parameters, initialize, run!
 using TightBindingApproximation: AbstractTBA, TBA, Fermionic, TBAKind
 using LinearAlgebra: diagm, eigen, Hermitian, cholesky, I, dot, NoPivot
 using SharedArrays: SharedArray
@@ -14,10 +14,7 @@ using RecipesBase: RecipesBase, @recipe, @series
 export RPA, EigenRPA, chiq, chikqm, chiq0, correlation, findk, projchi, projchiim, fermifunc
 export PHVertexRepresentation, isevenperm, issamesite, ParticleHoleSusceptibility, selectpath
 
-# fix bug for TightBindingApproximation
-using QuantumLattices: getcontent
-@inline dimension(tba::AbstractTBA{<:TBAKind, <:AnalyticalExpression}) = dimension(getfield(getcontent(tba, :H), :expression))
-#
+
 
 
 """

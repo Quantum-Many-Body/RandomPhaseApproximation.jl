@@ -13,13 +13,13 @@ The following codes could compute the spin excitation within random phase approx
 using QuantumLattices
 using RandomPhaseApproximation
 using Plots
-using TightBindingApproximation: EnergyBands
+using TightBindingApproximation: EnergyBands, Fermionic
 
 lattice = Lattice(
     [0.0, 0.0];
     vectors=[[1.0, 0.0], [0.0, 1.0]]
 )
-b₁, b₂ = lattice.reciprocals[1], lattice.reciprocals[2]
+b₁, b₂ = reciprocals(lattice)
 hilbert = Hilbert(pid=>Fock{:f}(1, 2) for pid in 1:length(lattice))
 
 pair = Coupling(Index(:, FID(:, 1//2, :)), Index(:, FID(:, -1//2, :))) -  Coupling(Index(:, FID(:, -1//2, :)), Index(:, FID(:, 1//2, :)))
@@ -47,7 +47,7 @@ rpa = RPA(lattice, hilbert, (t1, Δ), (U, ); neighbors=1)
 
 #plot energy bands
 pathek = ReciprocalPath{:k}(
-    lattice.reciprocals, 
+    reciprocals(lattice), 
     (0//2, 0//2)=>(1//2, 0//2), 
     (1//2, 0//2)=>(1//2, 1//2), 
     (1//2, 1//2)=>(0, 0),
@@ -68,7 +68,8 @@ plt1 = plot(
 The transverse spin excitation is calculated.
 ```@example BdG
 nx, ny= 16, 16
-bz = ReciprocalZone(lattice.reciprocals, 
+bz = ReciprocalZone(
+    reciprocals(lattice), 
     Segment(0, 1, nx), 
     Segment(0//2, 2//2, ny)
 )
