@@ -109,6 +109,8 @@ plt = plot(
 Another way to define the TBA.
 ```@example BdG
 import QuantumLattices: dimension
+using TightBindingApproximation: TBA
+
 table = Table(hilbert, OperatorUnitToTuple(:site, :orbital, :spin))
 function hamiltonian(t::Float64, delta::Float64;k=nothing, kwargs...) 
     @assert !isnothing(k) "hamiltonian error"
@@ -123,7 +125,7 @@ function hamiltonian(t::Float64, delta::Float64;k=nothing, kwargs...)
 end
 dimension(hamiltonian::Function) = 4
 
-parameters = Parameters{(:t, :delta)}(0.2,0.0598)
+parameters = Parameters{(:t, :delta)}(0.4, 0.4*0.299)
 tbafunc = TBA{Fermionic{:BdG}}(lattice, hamiltonian, parameters)
 rpa2 = RPA(tbafunc, hilbert, table, (U, ); neighbors=1)
 antirpa2 = Algorithm(:dAFM, rpa2);
