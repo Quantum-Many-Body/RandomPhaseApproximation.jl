@@ -165,15 +165,16 @@ end
         boundary::Boundary=plain
     ) where {K<:TBAKind}
 
-Construct a `RPA` type.
+Construct a `RPA` type. 
 """
 function RPA(tba::AbstractTBA{<:TBAKind, <:OperatorGenerator}, uterms::Tuple{Vararg{Term}})
     table = Table(tba.H.hilbert, OperatorUnitToTuple(:site, :orbital, :spin))
     u = OperatorGenerator(uterms, tba.H.bonds, tba.H.hilbert; half=false, table=table, boundary=tba.H.operators.boundary)
     return RPA(tba, u)
 end
-function RPA(tba::AbstractTBA{<:TBAKind, <:AnalyticalExpression}, hilbert::Hilbert, table::Table, uterms::Tuple{Vararg{Term}}; neighbors::Union{Nothing, Int, Neighbors}=nothing, boundary::Boundary=plain)
+function RPA(tba::AbstractTBA{K, <:AnalyticalExpression}, hilbert::Hilbert, table::Table, uterms::Tuple{Vararg{Term}}; neighbors::Union{Nothing, Int, Neighbors}=nothing, boundary::Boundary=plain) where {K<:TBAKind}
     # table = Table(hilbert, OperatorUnitToTuple(:site, :orbital, :spin))
+    K<:Fermionic{:BdG} && @warn "the table of TBA should be (:nambu, *, *, *) where * denotes other Degrees Of Freedom."
     u = OperatorGenerator(uterms, bonds(tba.lattice, neighbors), hilbert; half=false, table=table, boundary=boundary)
     return RPA(tba, u)
 end
@@ -248,6 +249,7 @@ function run!(rpa::Algorithm{<:RPA}, ins::Assignment{<:ParticleHoleSusceptibilit
     mu = get(ins.action.options, :μ, 0.0)
     scflag = kind(tba) == Fermionic(:BdG) ? true : false
     kloc = get(ins.action.options, :findk, false)
+    ecut = get(ins.action.options, :cut_off, Inf)
     if kloc
         ndim, nk = dimension(tba), length(ins.action.bz)
         eigenvc = zeros(ComplexF64, ndim, ndim, nk)
@@ -259,7 +261,13 @@ function run!(rpa::Algorithm{<:RPA}, ins::Assignment{<:ParticleHoleSusceptibilit
         end
         χ₀, χ = chiq(eigenvc, eigenval, ins.action.bz, ins.action.path, vph, ins.action.energies; eta=eta, tem=tem,mu=mu, scflag=scflag)
     else
-        χ₀, χ = chiq(tba, ins.action.bz, ins.action.path, vph, ins.action.energies; eta=eta, tem=tem, mu=mu, scflag=scflag, gauge=gauge, ins.action.options...)
+        if ecut < Inf
+            @warn "This mode (cut off energy) is the experimental method."
+            bz₁ = _kpoint_cutoff(ins.action.bz, ecut, mu, tba)
+            χ₀, χ = chiq(tba, bz₁, ins.action.path, vph, ins.action.energies; eta=eta, tem=tem, mu=mu, scflag=scflag, gauge=gauge, ins.action.options...)
+        else
+            χ₀, χ = chiq(tba, ins.action.bz, ins.action.path, vph, ins.action.energies; eta=eta, tem=tem, mu=mu, scflag=scflag, gauge=gauge, ins.action.options...)
+        end
     end 
     savetag = get(ins.action.options, :save, false)
     filename = get(ins.action.options, :filename, "chi")
@@ -271,6 +279,14 @@ function run!(rpa::Algorithm{<:RPA}, ins::Assignment{<:ParticleHoleSusceptibilit
     end
     ins.data[3][:, :] = correlation(χ, ins.action.path, ins.action.operators, U.table; gauge=gauge₁)
     ins.data[4][:, :] = correlation(χ₀, ins.action.path, ins.action.operators, U.table; gauge=gauge₁)      
+end
+function _kpoint_cutoff(bz::ReciprocalZone, ecut::Float64, mu::Float64, tba::AbstractTBA)
+    res = Vector{Float64}[]
+    for k in bz
+        F = eigen(matrix(tba; k=k, gauge=:icoordinate)) 
+        minimum(abs, F.values .- mu) > ecut || push!(res, Vector(k))
+    end
+    return res
 end
 """
     matrix!(m::Matrix{<:Number}, operators::Operators, table::Table, k; gauge=:rcoordinate)
@@ -326,35 +342,39 @@ end
 """
     fermifunc(e::T, temperature::T=1e-12, mu::T=0.0) where {T<:Real} -> Float64
  
-Fermi distribution function.
+Fermi distribution function. Boltzmann constant kb = 1.
 """
 function fermifunc(e::T, temperature::T=1e-12, mu::T=0.0) where {T<:Real}
     if temperature > 1e-10
-        f=(e-mu)/temperature
-        if f>20
-            f=0.0
-        elseif f<-20
-            f=1.0
+        f = (e - mu)/temperature
+        if f > 20
+            f = 0.0
+        elseif f < -20
+            f = 1.0
         else
-            f=1/(1+exp(f))
+            f = 1/(1 + exp(f))
         end
     else
-        f = e-mu
-        if f>0.0
-            f=0.0
+        f = e - mu
+        if f > 0.0
+            f = 0.0
         else
-            f=1.0
+            f = 1.0
         end
     end        
     return f
 end
 
 """
-    _chikq0(tba::AbstractTBA, k::AbstractVector, q::AbstractVector, omega::Float64; eta::Float64=0.01, tem::Float64=1e-12, mu::Float64=0.0, kwargs...)
+    _chikq0(tba::AbstractTBA, k::AbstractVector, q::AbstractVector, omega::Float64; 
+    eta::Float64=0.01, tem::Float64=1e-12, mu::Float64=0.0, kwargs...)
 
 Return chi0(k,q)_{ij,mn}= chi0(k,q)_{-+,+-}, chi0(k,q)_{12,34}== <c^\\dagger_{k,2}c_{k-q ,1}c^\\dagger_{k-q,3}c_{k,4}> 
 """
-function _chikq0(tba::AbstractTBA, k::AbstractVector, q::AbstractVector, omega::Float64; eta::Float64=0.01, tem::Float64=1e-12, mu::Float64=0.0, kwargs...)
+function _chikq0(
+    tba::AbstractTBA, k::AbstractVector, q::AbstractVector, omega::Float64; 
+    eta::Float64=0.01, tem::Float64=1e-12, mu::Float64=0.0, kwargs...
+)
     Fk = eigen(Hermitian(matrix(tba; k=k, kwargs...)))
     Fkq = eigen(Hermitian(matrix(tba; k=k-q, kwargs...)))
     n = length(Fk.values)
@@ -365,7 +385,10 @@ function _chikq0(tba::AbstractTBA, k::AbstractVector, q::AbstractVector, omega::
     return u*temp*adjoint(u)
 end
 
-function _chikqsc0(tba::AbstractTBA, k::AbstractVector, q::AbstractVector, omega::Float64; eta::Float64=0.01, tem::Float64=1e-12, mu::Float64=0.0, kwargs...)
+function _chikqsc0(
+    tba::AbstractTBA, k::AbstractVector, q::AbstractVector, omega::Float64; 
+    eta::Float64=0.01, tem::Float64=1e-12, mu::Float64=0.0, kwargs...
+)
     Fk = eigen(Hermitian(matrix(tba; k=k, kwargs...)))
     Fkq = eigen(Hermitian(matrix(tba; k=k-q, kwargs...)))
     n = length(Fk.values)
@@ -405,7 +428,17 @@ function _chikqsc0(Ek::Vector{Float64}, Ekq::Vector{Float64}, uk::Matrix{Complex
 end
 
 """                
-    chiq(tba::AbstractTBA, bz::ReciprocalZone, path::Union{ReciprocalPath, ReciprocalZone}, vph::Array{T,3}, omegam::AbstractVector; eta::Float64=0.01, tem::Float64=1e-12, mu::Float64=0.0, scflag=false, kwargs...) where T<:Number -> Tuple{ Array{ComplexF64, 4}, Array{ComplexF64, 4} }            
+    chiq(
+        tba::AbstractTBA, 
+        bz::AbstractVector{<:AbstractVector}, 
+        path::Union{ReciprocalPath, ReciprocalZone}, 
+        vph::Array{T,3}, omegam::AbstractVector; 
+        eta::Float64=0.01, 
+        tem::Float64=1e-12, 
+        mu::Float64=0.0, 
+        scflag=false, 
+        kwargs...
+    ) where T<:Number -> Tuple{ Array{ComplexF64, 4}, Array{ComplexF64, 4} }            
 
 Get the particle-hole susceptibilities χ⁰(ω,q) and χ(ω,q). The spectrum function is satisfied by A(ω,q) = Im[χ(ω+i*0⁺,q)].
 
@@ -418,7 +451,18 @@ Get the particle-hole susceptibilities χ⁰(ω,q) and χ(ω,q). The spectrum fu
 - `scflag` == false (default, no superconductivity), or true ( BdG model)
 - `kwargs` is transfered to `matrix(tba; kwargs...)` function
 """             
-function chiq(tba::AbstractTBA, bz::ReciprocalZone, path::Union{ReciprocalPath, ReciprocalZone}, vph::Array{T,3}, omegam::AbstractVector; eta::Float64=0.01, tem::Float64=1e-12, mu::Float64=0.0, scflag=false, kwargs...) where T<:Number
+function chiq(
+    tba::AbstractTBA, 
+    bz::AbstractVector{<:AbstractVector}, 
+    path::Union{ReciprocalPath, ReciprocalZone}, 
+    vph::Array{T,3}, 
+    omegam::AbstractVector; 
+    eta::Float64=0.01, 
+    tem::Float64=1e-12, 
+    mu::Float64=0.0, 
+    scflag=false, 
+    kwargs...
+) where T<:Number
     nk = length(bz)
     nq = length(path)
     nw = length(omegam)
@@ -427,7 +471,7 @@ function chiq(tba::AbstractTBA, bz::ReciprocalZone, path::Union{ReciprocalPath, 
     chi = SharedArray{ComplexF64}(ndim, ndim, nw, nq)
     idmat = Matrix{Float64}(I, ndim, ndim)
     if scflag == false              
-        @sync @distributed for j=1:nq*nw #iq=1:nq
+        @sync @distributed for j = 1:nq*nw #iq=1:nq
             iq, iw = fldmod1(j, nw)
             q = path[iq]
             ω = omegam[iw]
@@ -497,7 +541,7 @@ function chiq(eigenvc::Array{ComplexF64,3}, eigenval::Array{Float64,2}, bz::Reci
         chi0[:,:,iw,iq] = @distributed (+) for i = 1:nk
             kq = bz[i] - q
             ikq = findk(kq, bz)
-            1/nk*_chikq0(eigenval[:, i], eigenval[:, ikq], eigenvc[:, :, i], eigenvc[:, :, ikq], ω; eta=eta,tem=tem, mu=mu)
+            1/nk*_chikq0(eigenval[:, i], eigenval[:, ikq], eigenvc[:, :, i], eigenvc[:, :, ikq], ω; eta=eta, tem=tem, mu=mu)
         end
             chi[:, :, iw, iq] = chi0[:, :, iw, iq]*inv(idmat + vph[:, :, iq]*chi0[:, :, iw, iq])
         end
