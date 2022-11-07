@@ -11,7 +11,7 @@ using DelimitedFiles: writedlm
 using Serialization: serialize
 using RecipesBase: RecipesBase, @recipe, @series
 
-export RPA, EigenRPA, chiq, chikqm, chiq0, correlation, findk, projchi, projchiim, fermifunc
+export RPA, EigenRPA, chiq, chikqm, chiq0, correlation, findk, projchi, projchiim, fermifunc, vertex_ph
 export PHVertexRepresentation, isevenperm, issamesite, ParticleHoleSusceptibility, selectpath
 
 
@@ -200,7 +200,22 @@ Get matrix of particle-hole channel of interaction.
     field == :U && return PHVertexRepresentation{typeof(rpa.U)}(k, rpa.U.table, gauge)(expand(rpa.U))
     field == :tba && return matrix(rpa.tba; k=k, gauge=gauge, kwargs...)
 end
+"""
+    vertex_ph(rpa::RPA, path::AbstractVector{<:AbstractVector}, gauge=:icoordinate) -> Array{ComplexF64, 3}
 
+Return particle-hole vertex induced by the direct channel of interaction ( except the Hubbard interaction which include direct and exchange channel).
+"""
+@inline function vertex_ph(rpa::RPA, path::AbstractVector{<:AbstractVector}, gauge=:icoordinate; kwargs...)
+    n = length(rpa.U.table)
+    nq = length(path)
+    vph = zeros(ComplexF64, n^2, n^2, nq)
+    UU = rpa.U
+    update!(UU; kwargs...)
+    for (i, q) in enumerate(path)
+        vph[:, :, i] = PHVertexRepresentation{typeof(rpa.U)}(q, rpa.U.table, gauge)(expand(UU))
+    end
+    return vph
+end
 """
     ParticleHoleSusceptibility{P<:Union{ReciprocalPath,ReciprocalZone}, RZ<:ReciprocalZone, E<:AbstractVector, S<:Operators} <: Action
 
@@ -336,8 +351,6 @@ function correlation(χ::Array{<:Number, 4}, path::Union{ReciprocalPath, Recipro
     end
     return res 
 end
-
-
 
 """
     fermifunc(e::T, temperature::T=1e-12, mu::T=0.0) where {T<:Real} -> Float64
