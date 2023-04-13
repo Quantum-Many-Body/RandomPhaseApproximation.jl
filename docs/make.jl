@@ -18,7 +18,7 @@ makedocs(;
         "Home" => "index.md",
         "Examples" => [
             "examples/Introduction.md",
-            "examples/PiFluxSquare.md",
+            "examples/SquarePiFlux.md",
             "examples/Squaredx2y2Wave.md",
         ]
     ],

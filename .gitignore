@@ -1,4 +1,6 @@
 *.jl.*.cov
 *.jl.cov
 *.jl.mem
-/docs/build/
+docs/build/
+desktop.ini
+test/*.png

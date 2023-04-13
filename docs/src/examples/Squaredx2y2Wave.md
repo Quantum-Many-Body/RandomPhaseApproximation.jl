@@ -2,141 +2,128 @@
 CurrentModule = RandomPhaseApproximation
 ```
 
-# dx2y2-wave superconductor
-Spin excitation of t + Δ + Hubbard model on square lattice.
+# ``d_{x^2-y^2}`` wave superconductor on square lattice
 
-## Spectrum of spin excitation
+Spin excitations of t + Δ + Hubbard model on square lattice by random phase approximation.
 
-The following codes could compute the spin excitation within random phase approximation.
+## Spectra of spin excitations
 
+The following codes could compute the spin excitation spectral within random phase approximation.
+
+First, construct the RPA frontend:
 ```@example BdG
 using QuantumLattices
 using RandomPhaseApproximation
 using Plots
 using TightBindingApproximation: EnergyBands, Fermionic
 
-lattice = Lattice(
-    [0.0, 0.0];
-    vectors=[[1.0, 0.0], [0.0, 1.0]]
-)
-b₁, b₂ = reciprocals(lattice)
-hilbert = Hilbert(pid=>Fock{:f}(1, 2) for pid in 1:length(lattice))
-
-pair = Coupling(Index(:, FID(:, 1//2, :)), Index(:, FID(:, -1//2, :))) -  Coupling(Index(:, FID(:, -1//2, :)), Index(:, FID(:, 1//2, :)))
-
-t1 = Hopping(:t1, 1.0*0.4, 1)
+lattice = Lattice([0.0, 0.0]; vectors=[[1.0, 0.0], [0.0, 1.0]])
+hilbert = Hilbert(site=>Fock{:f}(1, 2) for site in 1:length(lattice))
+t = Hopping(:t, 1.0*0.4, 1)
 Δ = Pairing(
-    :dx2y2, 
-    0.299*0.4, 
-    1, 
-    pair;
-    amplitude=x->(
-        ϕ=azimuth(rcoordinate(x));
-        any(≈(ϕ),(0,π)) && return x[1].site == 1 && x[2].site==2 ? 1 : -1 ;
-        any(≈(ϕ),(π/2, 3π/2)) && return x[1].site == 1 && x[2].site==2 ? -1 : 1 
-    )       
- )
-
-U = Hubbard(:U, 0.4)
-mx = MatrixCoupling(:, FID, :, σ"x", :)
-my = MatrixCoupling(:, FID, :, σ"y", :)
-mz = MatrixCoupling(:, FID, :, σ"z", :)
-
-#define the RPA frontend 
-rpa = RPA(lattice, hilbert, (t1, Δ), (U, ); neighbors=1)
-
-#plot energy bands
-pathek = ReciprocalPath{:k}(
-    reciprocals(lattice), 
-    (0//2, 0//2)=>(1//2, 0//2), 
-    (1//2, 0//2)=>(1//2, 1//2), 
-    (1//2, 1//2)=>(0, 0),
-    length=50
-)
-etba = Algorithm(:SquareAFM, rpa.tba)(:eband, EnergyBands(pathek, gauge=:rcoordinate))
-
-plt1 = plot(
-    etba, 
-    xticks=(
-        [0, 50, 100, 150], 
-        ["(0,0)", "(π,0)","(π,π)","(0,0)"]
+    :Δ,
+    0.299*0.4,
+    1,
+    Coupling(:, FID, :, (1//2, -1//2), :)-Coupling(:, FID, :, (-1//2, 1//2), :);
+    amplitude=bond::Bond->(
+        ϕ = azimuth(rcoordinate(bond));
+        condition = isodd(bond[1].site) && iseven(bond[2].site);
+        any(≈(ϕ), (0, π)) && return condition ? 1 : -1;
+        any(≈(ϕ), (π/2, 3π/2)) && return condition ? -1 : 1
     )
 )
-#display(plt1)
+U = Hubbard(:U, 0.4)
+rpa = Algorithm(:dx²y², RPA(lattice, hilbert, (t, Δ), (U,); neighbors=1));
+
+nothing # hide
 ```
 
-The transverse spin excitation is calculated.
+The electronic energy bands can be shown as follows:
 ```@example BdG
-nx, ny= 16, 16
-bz = ReciprocalZone(
-    reciprocals(lattice), 
-    Segment(0, 1, nx), 
-    Segment(0//2, 2//2, ny)
+# plot electronic energy bands
+path = ReciprocalPath(
+    reciprocals(lattice),
+    (0//2, 0//2)=>(1//2, 0//2),
+    (1//2, 0//2)=>(1//2, 1//2),
+    (1//2, 1//2)=>(0, 0);
+    length=50
 )
-path, = selectpath(
-    [(b₁*0, b₁/2), (b₁/2, b₂/2+b₁/2), (b₂/2+b₁/2, b₂*0)],
-    bz;
-    ends=[false, false, true]
+ebs = Algorithm(:dx²y², rpa.frontend.tba)(:EB, EnergyBands(path, gauge=:rcoordinate))
+plot(
+    ebs,
+    xticks=(
+        [0, 50, 100, 150],
+        ["(0, 0)", "(π, 0)", "(π, π)", "(0, 0)"]
+    )
 )
-s⁺ = expand(Onsite(:sx, 1.0+0.0im, 1/2*mx+0.5im*my), bonds(lattice, 1), hilbert, half=false) 
-s⁻ = expand(Onsite(:sy, 1.0+0.0im, 1/2*mx-0.5im*my), bonds(lattice, 1), hilbert, half=false) 
-sz = expand(Onsite(:sz, 1.0+0.0im, 1/2*mz), bonds(lattice, 1), hilbert, half=false) 
+```
 
-phs = ParticleHoleSusceptibility(
-    path, 
-    bz, 
-    range(0.0, 4.0, length=400), 
+The transverse spin excitation spectral can be computed:
+```@example BdG
+mx = MatrixCoupling(:, FID, :, σ"x", :)
+my = MatrixCoupling(:, FID, :, σ"y", :)
+
+nk=16
+brillouinzone = BrillouinZone(reciprocals(lattice), nk)
+path, = selectpath(
+    brillouinzone,
+    (0, 0)=>(0, 1//2),
+    (0, 1//2)=>(1//2, 1//2),
+    (1//2, 1//2)=>(0, 0);
+    ends=((true, false), (true, false), (true, true))
+)
+
+s⁺ = expand(Onsite(:sx, Complex(1.0), 0.5*mx+0.5im*my), bonds(lattice, 0), hilbert)
+s⁻ = expand(Onsite(:sy, Complex(1.0), 0.5*mx-0.5im*my), bonds(lattice, 0), hilbert)
+
+transverse = ParticleHoleSusceptibility(
+    path,
+    brillouinzone,
+    range(0.0, 4.0, length=400),
     ([s⁺], [s⁻]);
     η=0.02,
     save=false,
     findk=true
 )
-antirpa = Algorithm(:dAFM, rpa);
-tespm = antirpa(:chipm, phs);
+χ⁺⁻ = rpa(:χ⁺⁻, transverse)
 
-#plot spectrum of longitudinal spin excitation
-plt = plot(
-    tespm, 
+plot(
+    χ⁺⁻,
     xticks=(
         [0, 16/2, 32/2, 48/2, 64/2+1],
-        ["(0,0)",  "(π,0)","(π,π)","(0,0)"]
+        ["(0, 0)", "(π, 0)", "(π, π)", "(0, 0)"]
     ),
     clims=(0, 0.5)
 )
-#display(plt)
 ```
 
-Another way to define the TBA.
+Another way to define the tight-binding model:
 ```@example BdG
 import QuantumLattices: dimension
 using TightBindingApproximation: TBA
 
 table = Table(hilbert, OperatorUnitToTuple(:site, :orbital, :spin))
-function hamiltonian(t::Float64, delta::Float64;k=nothing, kwargs...) 
+function hamiltonian(t::Float64, Δ::Float64; k=nothing, kwargs...) 
     @assert !isnothing(k) "hamiltonian error"
-    ek = 2*t*(cos(k[1]) + cos(k[2]))
-    dk = 2*delta*(cos(k[1]) - cos(k[2]))   
-    res = [ ek  0  0  dk;
-            0   ek -dk 0;
+    ek = 2t * (cos(k[1])+cos(k[2]))
+    dk = 2Δ * (cos(k[1])-cos(k[2]))
+    return [ek  0   0   dk;
+            0   ek  -dk 0;
             0   -dk -ek 0;
-            dk   0   0  -ek
+            dk  0   0   -ek
     ]
-    return res
 end
-dimension(hamiltonian::Function) = 4
+@inline dimension(::typeof(hamiltonian)) = 4
 
-parameters = Parameters{(:t, :delta)}(0.4, 0.4*0.299)
-tbafunc = TBA{Fermionic{:BdG}}(lattice, hamiltonian, parameters)
-rpa2 = RPA(tbafunc, hilbert, table, (U, ); neighbors=1)
-antirpa2 = Algorithm(:dAFM, rpa2);
-tespm2 = antirpa2(:chipm, phs);
-
-#plot spectrum of longitudinal spin excitation
+parameters = Parameters{(:t, :Δ)}(0.4, 0.4*0.299)
+tba = TBA{Fermionic{:BdG}}(lattice, hamiltonian, parameters)
+rpa = Algorithm(:dx²y², RPA(tba, hilbert, table, (U,); neighbors=1))
+χ⁺⁻ = rpa(:χ⁺⁻, transverse)
 plot(
-    tespm2, 
+    χ⁺⁻,
     xticks=(
         [0, 16/2, 32/2, 48/2, 64/2+1],
-        ["(0,0)",  "(π,0)","(π,π)","(0,0)"]
+        ["(0, 0)", "(π, 0)", "(π, π)", "(0, 0)"]
     ),
     clims=(0, 0.5)
 )

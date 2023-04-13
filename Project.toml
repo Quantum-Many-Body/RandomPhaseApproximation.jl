@@ -4,7 +4,6 @@ authors = ["wwangnju <wwangnju@163.com> and contributors"]
 version = "0.1.0"
 
 [deps]
-DelimitedFiles = "8bb1440f-4735-579b-a4ab-409b98df4dab"
 Distributed = "8ba89e20-285c-5b6f-9357-94700520ee1b"
 LinearAlgebra = "37e2e46d-f89d-539d-b4ee-838fcccc9c8e"
 QuantumLattices = "78ae1a1f-1d5d-5174-b61c-66e31b2346dc"
@@ -14,8 +13,7 @@ SharedArrays = "1a1011a3-84de-559e-8e89-a11a2f7dc383"
 TightBindingApproximation = "d3576f78-cb9d-4774-9dc5-b247cf392ff4"
 
 [compat]
-julia = "1.8"
-QuantumLattices = "0.9.3"
-TightBindingApproximation = "0.1.15"
+QuantumLattices = "0.9.7"
 RecipesBase = "1"
-
+TightBindingApproximation = "0.1.17"
+julia = "1.8"

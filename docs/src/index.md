@@ -29,6 +29,7 @@ pkg> add https://github.com/Quantum-Many-Body/RandomPhaseApproximation.jl
 
 ```@autodocs
 Modules = [RandomPhaseApproximation]
+Order = [:module, :constant, :type, :macro, :function]
 ```
 
 

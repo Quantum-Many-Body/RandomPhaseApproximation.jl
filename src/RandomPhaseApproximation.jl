@@ -1,29 +1,25 @@
 module RandomPhaseApproximation
-using Distributed: @distributed 
-using QuantumLattices: ID, MatrixRepresentation, Operator, Operators, RepresentationGenerator, rank, creation, annihilation, CompositeIndex, Frontend, Hilbert, Term, Neighbors, Boundary, plain
-using QuantumLattices: OperatorUnitToTuple, Table, OperatorGenerator, bonds, expand, kind, dimension, ReciprocalPath, ReciprocalZone, Action, Algorithm, Assignment
-using QuantumLattices:  kind, AbstractLattice, AnalyticalExpression, dimension
-import QuantumLattices: add!, matrix, update!, Parameters, initialize, run!
-using TightBindingApproximation: AbstractTBA, TBA, Fermionic, TBAKind
-using LinearAlgebra: diagm, eigen, Hermitian, cholesky, I, dot, NoPivot
-using SharedArrays: SharedArray
-using DelimitedFiles: writedlm
-using Serialization: serialize
+
+using Distributed: @distributed
+using LinearAlgebra: I, Hermitian, NoPivot, cholesky, diagm, dot, eigen
+using QuantumLattices: plain, bonds, dimension, expand, iscreation, kind, rank
+using QuantumLattices: AbstractLattice, Action, Algorithm, AnalyticalExpression, Assignment, BrillouinZone, CompositeIndex, Frontend, Hilbert, MatrixRepresentation, Neighbors, Operator, OperatorGenerator, Operators, OperatorUnitToTuple, RepresentationGenerator, ReciprocalSpace, Table, Term
 using RecipesBase: RecipesBase, @recipe, @series
+using Serialization: serialize
+using SharedArrays: SharedArray
+using TightBindingApproximation: AbstractTBA, Fermionic, TBA, TBAKind
 
-export RPA, EigenRPA, chiq, chikqm, chiq0, correlation, findk, projchi, projchiim, fermifunc, vertex_ph
-export PHVertexRepresentation, isevenperm, issamesite, ParticleHoleSusceptibility, selectpath
+import QuantumLattices: Parameters, add!, initialize, matrix, run!, update!
 
-
-
+export EigenRPA, ParticleHoleSusceptibility, PHVertexMatrix, RPA, chiq, chiq0, chiq0chiq, correlation, eigenrpa
 
 """
     isevenperm(p::Vector) -> Bool
 
-Judge the number of permutations.
+Judge the parity of permutations.
 """
 function isevenperm(p::Vector)
-    @assert isperm(p)
+    @assert isperm(p) "isevenperm error: invalid permutations."
     n = length(p)
     used = falses(n)
     even = true
@@ -38,82 +34,95 @@ function isevenperm(p::Vector)
             even = !even
         end
     end
-    even
+    return even
 end
-issamesite(op₁::CompositeIndex, op₂::CompositeIndex) = (op₁.index.site == op₂.index.site && op₁.icoordinate == op₂.icoordinate)
 
 """
-    PHVertexRepresentation{H<:RepresentationGenerator, Vq, Vk, T} <: MatrixRepresentation
+    issamesite(op₁::CompositeIndex, op₂::CompositeIndex) -> Bool
 
-Matrix representation of the particle-hole channel of two-body interaction terms. When the k₁ and k₂ are nothing, the exchange terms is ommitted. 
-``1/N\\sum_{kk'q\\alpha\beta m n}[V^{ph}_{\\alpha\\beta,mn}(q)-V^{ph}_{\\alpha m,\\beta n}(k'-k)]c^\\dagger_{k-q\\alpha}c_{k\\beta}c^\\dagger_{k' n}c_{k'-q m}``
-c^†ᵢ = 1/√N*∑ₖc†ₖ exp(-i*k*rᵢ) 
+Judge whether two composite indices are on site same site.
+"""
+@inline issamesite(op₁::CompositeIndex, op₂::CompositeIndex) = (op₁.index.site==op₂.index.site && op₁.icoordinate==op₂.icoordinate)
 
 """
-struct PHVertexRepresentation{H<:RepresentationGenerator, Vq, Vk, T} <: MatrixRepresentation
+    PHVertexMatrix{D<:Number, Vq, Vk, T} <: MatrixRepresentation
+
+Matrix representation of the particle-hole channel of two-body interaction terms:
+```math
+\\frac{1}{N}\\sum_{k₁k₂q, \\, \\alpha\\beta m n}[V^{ph}_{\\alpha\\beta, \\, mn}(q)-V^{ph}_{\\alpha m, \\, \\beta n}(k₂-k₁)]c^\\dagger_{k₁-q, \\, \\alpha}c_{k₁, \\, \\beta}c^\\dagger_{k₂, \\, n}c_{k₂-q, \\, m}
+```
+When the k₁ and k₂ are nothing, the exchange terms are omitted. Here, the Fourier transformation reads:
+```math
+c^†_i = \\frac{1}{\\sqrt{N}} ∑_k c^†_k \\exp(-i k rᵢ)
+```
+"""
+struct PHVertexMatrix{D<:Number, Vq, Vk, T} <: MatrixRepresentation
     q::Vq
     k₁::Vk
     k₂::Vk
     table::T
     gauge::Symbol
-    function PHVertexRepresentation{H}(q, k₁, k₂, table, gauge::Symbol=:icoordinate) where H<:RepresentationGenerator
-        @assert gauge∈(:rcoordinate, :icoordinate) "PHVertexRepresentation error: gauge must be :rcoordinate or :icoordinate."
-        return new{H, typeof(q), typeof(k₁), typeof(table)}(q, k₁, k₂, table, gauge)
+    function PHVertexMatrix{D}(q, k₁, k₂, table, gauge::Symbol=:icoordinate) where {D<:Number}
+        @assert gauge∈(:rcoordinate, :icoordinate) "PHVertexMatrix error: gauge must be `:rcoordinate` or `:icoordinate`."
+        return new{D, typeof(q), typeof(k₁), typeof(table)}(q, k₁, k₂, table, gauge)
     end
 end
+@inline Base.valtype(mr::PHVertexMatrix) = valtype(typeof(mr))
+@inline Base.valtype(::Type{<:PHVertexMatrix{D}}) where {D<:Number} = Matrix{promote_type(D, Complex{Int})}
+@inline Base.valtype(R::Type{<:PHVertexMatrix}, ::Type{<:Union{Operator, Operators}}) = valtype(R)
+@inline Base.zero(mr::PHVertexMatrix) = zeros(eltype(valtype(mr)), length(mr.table)^2, length(mr.table)^2)
+@inline Base.zero(mr::PHVertexMatrix, ::Union{Operator, Operators}) = zero(mr)
+@inline (mr::PHVertexMatrix)(m::Operator; kwargs...) = add!(zero(mr, m), mr, m; kwargs...)
+
 """
-    PHVertexRepresentation{H}(table, gauge::Symbol=:icoordinate)  where {H<:RepresentationGenerator}
-    PHVertexRepresentation{H}(q, table, gauge::Symbol=:icoordinate) where {H<:RepresentationGenerator}
+    PHVertexMatrix{D}(q, k₁, k₂, table, gauge::Symbol=:icoordinate) where {D<:Number}
+    PHVertexMatrix{D}(table, gauge::Symbol=:icoordinate)  where {D<:Number}
+    PHVertexMatrix{D}(q, table, gauge::Symbol=:icoordinate) where {D<:Number}
 
 Get the matrix representation of particle-hole channel.
 """
-@inline PHVertexRepresentation{H}(table, gauge::Symbol=:icoordinate) where {H<:RepresentationGenerator} = PHVertexRepresentation{H}(nothing, nothing, nothing, table, gauge)
-@inline PHVertexRepresentation{H}(q, table, gauge::Symbol=:icoordinate) where {H<:RepresentationGenerator} = PHVertexRepresentation{H}(q, nothing, nothing, table, gauge)
-@inline Base.valtype(phvr::PHVertexRepresentation) = valtype(typeof(phvr))
-@inline Base.valtype(::Type{<:PHVertexRepresentation{H}}) where {H<:RepresentationGenerator} = Matrix{promote_type(valtype(eltype(H)), Complex{Int})}
-@inline Base.valtype(R::Type{<:PHVertexRepresentation}, ::Type{<:Union{Operator, Operators}}) = valtype(R)
-@inline Base.zero(mr::PHVertexRepresentation) = zeros(eltype(valtype(mr)), length(mr.table)^2, length(mr.table)^2)
-@inline Base.zero(mr::PHVertexRepresentation, ::Union{Operator, Operators}) = zero(mr)
-@inline (mr::PHVertexRepresentation)(m::Operator; kwargs...) = add!(zero(mr, m), mr, m; kwargs...)
+@inline PHVertexMatrix{D}(table, gauge::Symbol=:icoordinate) where {D<:Number} = PHVertexMatrix{D}(nothing, nothing, nothing, table, gauge)
+@inline PHVertexMatrix{D}(q, table, gauge::Symbol=:icoordinate) where {D<:Number} = PHVertexMatrix{D}(q, nothing, nothing, table, gauge)
+
 """
-    add!(dest::AbstractMatrix, mr::PHVertexRepresentation{<:RepresentationGenerator}, m::Operator; kwargs...)
+    add!(dest::AbstractMatrix, mr::PHVertexMatrix, m::Operator; kwargs...)
 
 Get the matrix representation of an operator and add it to destination.
 """
-function add!(dest::AbstractMatrix, mr::PHVertexRepresentation{<:RepresentationGenerator}, m::Operator; kwargs...)
-    @assert rank(m) == 4 "add! error: rank(operator) $(rank(m)) == 4"
+function add!(dest::AbstractMatrix, mr::PHVertexMatrix, m::Operator; kwargs...)
+    @assert rank(m) == 4 "add! error: rank(operator) $(rank(m)) != 4"
     n = length(mr.table)
     destr = zeros(eltype(dest), n, n, n, n)
     cr = Int[]
     an = Int[]
     for i = 1:rank(m)
-        if m[i].index.iid.nambu == creation 
+        if iscreation(m[i])
             push!(cr, i)
         else
             push!(an, i)
         end
     end
+    @assert length(cr)==length(an)==2 "add! error: not particle-hole pair interactions."
     p = [cr[1], an[1], cr[2], an[2]]
     sign = isevenperm(p) ? 1 : -1
     seq₁, seq₂, seq₃, seq₄ = mr.table[m[p[1]].index], mr.table[m[p[2]].index], mr.table[m[p[4]].index], mr.table[m[p[3]].index]
-    
     if issamesite(m[p[1]], m[p[2]]) && issamesite(m[p[3]], m[p[4]]) && issamesite(m[p[2]], m[p[3]])
         destr[seq₁, seq₂, seq₃, seq₄] += m.value*sign
         destr[seq₄, seq₃, seq₂, seq₁] += m.value*sign
         destr[seq₁, seq₃, seq₂, seq₄] += -m.value*sign
         destr[seq₄, seq₂, seq₃, seq₁] += -m.value*sign
     elseif issamesite(m[p[1]], m[p[2]]) && issamesite(m[p[3]], m[p[4]])
-        coordinate = mr.gauge==:rcoordinate ? m[p[3]].rcoordinate - m[p[1]].rcoordinate : m[p[3]].icoordinate - m[p[1]].icoordinate
+        coordinate = mr.gauge==:rcoordinate ? m[p[3]].rcoordinate-m[p[1]].rcoordinate : m[p[3]].icoordinate-m[p[1]].icoordinate
         phaseq = isnothing(mr.q) ? one(eltype(dest)) : convert(eltype(dest), exp(-1im*dot(mr.q, coordinate)))
         destr[seq₁, seq₂, seq₃, seq₄] += m.value*sign*phaseq
         destr[seq₄, seq₃, seq₂, seq₁] += m.value*sign*conj(phaseq)
-        if !(isnothing(mr.k₁)) && !(isnothing(mr.k₂)) #no test
+        if !(isnothing(mr.k₁)) && !(isnothing(mr.k₂)) # no test
             phasek = convert(eltype(dest), exp(-1im*dot(mr.k₂-mr.k₁, coordinate)))
             destr[seq₁, seq₃, seq₂, seq₄] += -m.value*sign*phasek
             destr[seq₄, seq₂, seq₃, seq₁] += -m.value*sign*conj(phasek)
         end
     elseif issamesite(m[p[1]], m[p[4]]) && issamesite(m[p[3]], m[p[2]])
-        coordinate = mr.gauge==:rcoordinate ? m[p[3]].rcoordinate - m[p[1]].rcoordinate : m[p[3]].icoordinate - m[p[1]].icoordinate
+        coordinate = mr.gauge==:rcoordinate ? m[p[3]].rcoordinate-m[p[1]].rcoordinate : m[p[3]].icoordinate-m[p[1]].icoordinate
         phaseq = isnothing(mr.q) ? one(eltype(dest)) : convert(eltype(dest), exp(-1im*dot(mr.q, coordinate)))
         destr[seq₁, seq₃, seq₂, seq₄] += -m.value*sign*phaseq
         destr[seq₄, seq₂, seq₃, seq₁] += -m.value*sign*conj(phaseq)
@@ -121,14 +130,13 @@ function add!(dest::AbstractMatrix, mr::PHVertexRepresentation{<:RepresentationG
             phasek = convert(eltype(dest), exp(-1im*dot(mr.k₂-mr.k₁, coordinate)))
             destr[seq₁, seq₂, seq₃, seq₄] += m.value*sign*phasek
             destr[seq₄, seq₃, seq₂, seq₁] += m.value*sign*conj(phasek)
-        end 
-    else          
+        end
+    else
         error("add! error: the two-body interaction is error.")
     end
     dest[:, :] += reshape(destr, n^2, n^2)
     return dest
 end
-
 
 """
     RPA{L<:AbstractTBA, U<:RepresentationGenerator} <: Frontend
@@ -137,741 +145,631 @@ Random phase approximation in a fermionic system.
 """
 struct RPA{L<:AbstractTBA, U<:RepresentationGenerator} <: Frontend
     tba::L
-    U::U
-    function RPA(tba::AbstractTBA, U::RepresentationGenerator)
-        new{typeof(tba), typeof(U)}(tba, U)
-    end
+    interactions::U
 end
-@inline Parameters(rpa::RPA) = Parameters{(keys(Parameters(rpa.tba))...,keys(Parameters(rpa.U))...)}((Parameters(rpa.tba))...,(Parameters(rpa.U))... )
-"""
-    RPA(
-        tba::AbstractTBA{K, <:OperatorGenerator}, 
-        uterms::Tuple{Vararg{Term}}
-    ) where {K<:TBAKind}
-    RPA(
-        lattice::AbstractLattice, 
-        hilbert::Hilbert, 
-        terms::Tuple{Vararg{Term}}, 
-        uterms::Tuple{Vararg{Term}}; 
-        neighbors::Union{Nothing, Int, Neighbors}=nothing, 
-        boundary::Boundary=plain
-    )   
-    RPA(
-        tba::AbstractTBA{K, <:AnalyticalExpression}, 
-        hilbert::Hilbert, 
-        table::Table, 
-        uterms::Tuple{Vararg{Term}}; 
-        neighbors::Union{Nothing, Int, Neighbors}=nothing, 
-        boundary::Boundary=plain
-    ) where {K<:TBAKind}
-
-Construct a `RPA` type. 
-"""
-function RPA(tba::AbstractTBA{<:TBAKind, <:OperatorGenerator}, uterms::Tuple{Vararg{Term}})
-    table = Table(tba.H.hilbert, OperatorUnitToTuple(:site, :orbital, :spin))
-    u = OperatorGenerator(uterms, tba.H.bonds, tba.H.hilbert; half=false, table=table, boundary=tba.H.operators.boundary)
-    return RPA(tba, u)
-end
-function RPA(tba::AbstractTBA{K, <:AnalyticalExpression}, hilbert::Hilbert, table::Table, uterms::Tuple{Vararg{Term}}; neighbors::Union{Nothing, Int, Neighbors}=nothing, boundary::Boundary=plain) where {K<:TBAKind}
-    # table = Table(hilbert, OperatorUnitToTuple(:site, :orbital, :spin))
-    K<:Fermionic{:BdG} && @warn "the table of TBA should be (:nambu, *, *, *) where * denotes other Degrees Of Freedom."
-    u = OperatorGenerator(uterms, bonds(tba.lattice, neighbors), hilbert; half=false, table=table, boundary=boundary)
-    return RPA(tba, u)
-end
-function RPA(lattice::AbstractLattice, hilbert::Hilbert, terms::Tuple{Vararg{Term}}, uterms::Tuple{Vararg{Term}}; neighbors::Union{Nothing, Int, Neighbors}=nothing, boundary::Boundary=plain)
-    tba = TBA(lattice, hilbert, terms; neighbors=neighbors, boundary=boundary)
-    table = Table(hilbert, OperatorUnitToTuple(:site, :orbital, :spin))
-    u = OperatorGenerator(uterms, bonds(lattice, neighbors), hilbert; half=false, table=table, boundary=boundary)
-    return RPA(tba, u)
-end
+@inline Parameters(rpa::RPA) = merge(Parameters(rpa.tba), Parameters(rpa.interactions))
 @inline function update!(rpa::RPA; k=nothing, kwargs...)
     if length(kwargs)>0
-        update!(rpa.U; kwargs...)
         update!(rpa.tba.H; kwargs...)
+        update!(rpa.interactions; kwargs...)
     end
     return rpa
 end
+
 """
-    matrix(rpa::RPA, field::Symbol=:U; k=nothing, gauge=:icoordinate, kwargs...) -> Matrix
+    RPA(tba::AbstractTBA, interactions::Tuple{Vararg{Term}}; neighbors::Union{Nothing, Int, Neighbors}=nothing)
+    RPA(lattice::AbstractLattice, hilbert::Hilbert, terms::Tuple{Vararg{Term}}, interactions::Tuple{Vararg{Term}}; neighbors::Union{Nothing, Int, Neighbors}=nothing)
+    RPA(tba::AbstractTBA{K, <:AnalyticalExpression}, hilbert::Hilbert, table::Table, interactions::Tuple{Vararg{Term}}; neighbors::Union{Nothing, Int, Neighbors}=nothing) where {K<:TBAKind}
+
+Construct an `RPA` type.
+"""
+function RPA(tba::AbstractTBA, interactions::Tuple{Vararg{Term}}; neighbors::Union{Nothing, Int, Neighbors}=nothing)
+    @assert tba.H.operators.boundary==plain "RPA error: unsupported boundary condition."
+    table = Table(tba.H.hilbert, OperatorUnitToTuple(:site, :orbital, :spin))
+    isnothing(neighbors) && (neighbors = maximum(term->term.bondkind, interactions))
+    int = OperatorGenerator(interactions, bonds(tba.lattice, neighbors), tba.H.hilbert; table=table)
+    return RPA(tba, int)
+end
+@inline function RPA(lattice::AbstractLattice, hilbert::Hilbert, terms::Tuple{Vararg{Term}}, interactions::Tuple{Vararg{Term}}; neighbors::Union{Nothing, Int, Neighbors}=nothing)
+    return RPA(TBA(lattice, hilbert, terms; neighbors=neighbors), interactions)
+end
+function RPA(tba::AbstractTBA{K, <:AnalyticalExpression}, hilbert::Hilbert, table::Table, interactions::Tuple{Vararg{Term}}; neighbors::Union{Nothing, Int, Neighbors}=nothing) where {K<:TBAKind}
+    K<:Fermionic{:BdG} && @warn "the table of tba should be (:nambu, *, *, *) where * denotes other degrees of freedom."
+    isnothing(neighbors) && (neighbors = maximum(term->term.bondkind, interactions))
+    int = OperatorGenerator(interactions, bonds(tba.lattice, neighbors), hilbert; table=table)
+    return RPA(tba, int)
+end
+
+"""
+    matrix(rpa::RPA, field::Symbol=:int; k=nothing, gauge=:icoordinate, kwargs...) -> Matrix
 
 Get matrix of particle-hole channel of interaction.
 """
-@inline function matrix(rpa::RPA, field::Symbol=:U; k=nothing, gauge=:icoordinate, kwargs...)
-    field == :U && return PHVertexRepresentation{typeof(rpa.U)}(k, rpa.U.table, gauge)(expand(rpa.U))
-    field == :tba && return matrix(rpa.tba; k=k, gauge=gauge, kwargs...)
+@inline function matrix(rpa::RPA, field::Symbol=:int; k=nothing, gauge=:icoordinate, kwargs...)
+    field==:tba && return matrix(rpa.tba; k=k, gauge=gauge, kwargs...)
+    field==:int && return PHVertexMatrix{valtype(eltype(rpa.interactions))}(k, rpa.interactions.table, gauge)(expand(rpa.interactions))
+    error("matrix error: wrong field.")
 end
-"""
-    vertex_ph(rpa::RPA, path::AbstractVector{<:AbstractVector}, gauge=:icoordinate) -> Array{ComplexF64, 3}
 
-Return particle-hole vertex induced by the direct channel of interaction ( except the Hubbard interaction which include direct and exchange channel).
+# """
+#     vertex_ph(rpa::RPA, reciprocalspace::AbstractVector{<:AbstractVector}, gauge=:icoordinate) -> Array{ComplexF64, 3}
+
+# Return particle-hole vertex induced by the direct channel of interaction (except the Hubbard interaction which include both direct and exchange channels).
+# """
+# @inline function vertex_ph(rpa::RPA, reciprocalspace::AbstractVector{<:AbstractVector}, gauge=:icoordinate; kwargs...)
+#     update!(rpa.interactions; kwargs...)
+#     ops = expand(rpa.interactions)
+#     n, nq = length(rpa.interactions.table), length(reciprocalspace)
+#     result = zeros(promote_type(Complex{Int}, valtype(eltype(rpa.interactions))), n^2, n^2, nq)
+#     for (i, q) in enumerate(reciprocalspace)
+#         result[:, :, i] = PHVertexMatrix{valtype(eltype(rpa.interactions))}(q, rpa.interactions.table, gauge)(ops)
+#     end
+#     return result
+# end
+
 """
-@inline function vertex_ph(rpa::RPA, path::AbstractVector{<:AbstractVector}, gauge=:icoordinate; kwargs...)
-    n = length(rpa.U.table)
-    nq = length(path)
-    vph = zeros(ComplexF64, n^2, n^2, nq)
-    UU = rpa.U
-    update!(UU; kwargs...)
-    for (i, q) in enumerate(path)
-        vph[:, :, i] = PHVertexRepresentation{typeof(rpa.U)}(q, rpa.U.table, gauge)(expand(UU))
-    end
-    return vph
-end
-"""
-    ParticleHoleSusceptibility{P<:Union{ReciprocalPath,ReciprocalZone}, RZ<:ReciprocalZone, E<:AbstractVector, S<:Operators} <: Action
+    ParticleHoleSusceptibility{P<:ReciprocalSpace, B<:BrillouinZone, E<:AbstractVector, S<:Operators} <: Action
 
 Calculate the particle-hole susceptibility within random phase approximation.
-Attribute `options` contains (η=0.01, gauge =:icoordinate, temperature=1e-12, μ=0.0, findk = false)
+
+Attribute `options` contains `(η=0.01, gauge=:icoordinate, temperature=1e-12, μ=0.0, findk=false)`.
 """
-struct ParticleHoleSusceptibility{P<:Union{ReciprocalPath,ReciprocalZone}, RZ<:ReciprocalZone, E<:AbstractVector, S<:Operators} <: Action
-    path::P
-    bz::RZ
+struct ParticleHoleSusceptibility{P<:ReciprocalSpace, B<:BrillouinZone, E<:AbstractVector, S<:Operators} <: Action
+    reciprocalspace::P
+    brillouinzone::B
     energies::E
-    operators::Tuple{AbstractVector{S}, AbstractVector{S}}
+    operators::Tuple{Vector{S}, Vector{S}}
     options::Dict{Symbol, Any}
-    function ParticleHoleSusceptibility(path::Union{ReciprocalPath,ReciprocalZone}, bz::ReciprocalZone, energies::AbstractVector, operators::Tuple{AbstractVector{S}, AbstractVector{S}}, options::Dict{Symbol, Any}) where S<:Operators
-        @assert keys(path)==(:k,) "ParticleHoleSusceptibility error: the name of the momenta in the path must be :k."
-        @assert operators[1]|>length == length(operators[2]) "ParticleHoleSusceptibility error: the number of left operators must be equal to that of right operators."
-        new{typeof(path), typeof(bz), typeof(energies), S}(path, bz, energies, operators, options)
+    function ParticleHoleSusceptibility(reciprocalspace::ReciprocalSpace, brillouinzone::BrillouinZone, energies::AbstractVector, operators::Tuple{Vector{S}, Vector{S}}, options::Dict{Symbol, Any}) where {S<:Operators}
+        @assert names(reciprocalspace)==(:k,) "ParticleHoleSusceptibility error: the name of the momenta must be :k."
+        @assert length(operators[1])==length(operators[2]) "ParticleHoleSusceptibility error: the number of left operators must be equal to that of right operators."
+        new{typeof(reciprocalspace), typeof(brillouinzone), typeof(energies), S}(reciprocalspace, brillouinzone, energies, operators, options)
     end
 end
+
 """
-    ParticleHoleSusceptibility(path::Union{ReciprocalPath,ReciprocalZone}, bz::ReciprocalZone, energies::AbstractVector, operators::Tuple{AbstractVector{<:Operators}, AbstractVector{<:Operators}}; options...)
+    ParticleHoleSusceptibility(reciprocalspace::ReciprocalSpace, brillouinzone::BrillouinZone, energies::Vector, operators::Tuple{Vector{<:Operators}, Vector{<:Operators}}; options...)
 
 Construct a `ParticleHoleSusceptibility` type.
 """
-@inline function ParticleHoleSusceptibility(path::Union{ReciprocalPath,ReciprocalZone}, bz::ReciprocalZone, energies::AbstractVector, operators::Tuple{AbstractVector{<:Operators}, AbstractVector{<:Operators}}; options...)
-    ParticleHoleSusceptibility(path, bz, energies, operators, convert(Dict{Symbol, Any}, options))
+@inline function ParticleHoleSusceptibility(reciprocalspace::ReciprocalSpace, brillouinzone::BrillouinZone, energies::AbstractVector, operators::Tuple{Vector{<:Operators}, Vector{<:Operators}}; options...)
+    return ParticleHoleSusceptibility(reciprocalspace, brillouinzone, energies, operators, convert(Dict{Symbol, Any}, options))
 end
 
-@inline function initialize(ins::ParticleHoleSusceptibility, rpa::RPA)
-    x = collect(Float64, 0:(length(ins.path)-1))
-    y = collect(Float64, ins.energies)
+@inline function initialize(phs::ParticleHoleSusceptibility, rpa::RPA)
+    x = collect(Float64, 0:(length(phs.reciprocalspace)-1))
+    y = collect(Float64, phs.energies)
     z = zeros(ComplexF64, length(y), length(x))
     z₀ = zeros(ComplexF64, length(y), length(x))
     return (x, y, z, z₀)
 end
-function run!(rpa::Algorithm{<:RPA}, ins::Assignment{<:ParticleHoleSusceptibility})
-    U, tba = rpa.frontend.U, rpa.frontend.tba
-    n = length(U.table)
-    nq = length(ins.action.path)
+function run!(rpa::Algorithm{<:RPA}, phs::Assignment{<:ParticleHoleSusceptibility})
+    int, tba = rpa.frontend.interactions, rpa.frontend.tba
+    n, nq = length(int.table), length(phs.action.reciprocalspace)
     vph = zeros(ComplexF64, n^2, n^2, nq)
-    gauge = get(ins.action.options, :gauge, :icoordinate)
-    for (i, q) in enumerate(ins.action.path)
-        vph[:, :, i] = matrix(rpa.frontend, :U; k=q, gauge=gauge)
+    gauge = get(phs.action.options, :gauge, :icoordinate)
+    for (i, q) in enumerate(phs.action.reciprocalspace)
+        vph[:, :, i] = matrix(rpa.frontend, :int; k=q, gauge=gauge)
     end
-    eta = get(ins.action.options, :η, 0.01)
-    tem = get(ins.action.options, :temperature, 1e-12)
-    mu = get(ins.action.options, :μ, 0.0)
+    η = get(phs.action.options, :η, 0.01)
+    temperature = get(phs.action.options, :temperature, 1e-12)
+    μ = get(phs.action.options, :μ, 0.0)
     scflag = kind(tba) == Fermionic(:BdG) ? true : false
-    kloc = get(ins.action.options, :findk, false)
-    ecut = get(ins.action.options, :cut_off, Inf)
-    if kloc
-        ndim, nk = dimension(tba), length(ins.action.bz)
-        eigenvc = zeros(ComplexF64, ndim, ndim, nk)
-        eigenval = zeros(Float64, ndim, nk)
-        for (i, k) in enumerate(ins.action.bz)
-            F = eigen(matrix(tba; k=k, gauge=:icoordinate)) 
-            eigenval[:, i] = F.values
-            eigenvc[:, :, i] = F.vectors
+    findk = get(phs.action.options, :findk, false)
+    if findk
+        ndim, nk = dimension(tba), length(phs.action.brillouinzone)
+        eigvecs = zeros(ComplexF64, ndim, ndim, nk)
+        eigvals = zeros(Float64, ndim, nk)
+        for (i, k) in enumerate(phs.action.brillouinzone)
+            eigensystem = eigen(matrix(tba; k=k, gauge=:icoordinate))
+            eigvals[:, i] = eigensystem.values
+            eigvecs[:, :, i] = eigensystem.vectors
         end
-        χ₀, χ = chiq(eigenvc, eigenval, ins.action.bz, ins.action.path, vph, ins.action.energies; eta=eta, tem=tem,mu=mu, scflag=scflag)
+        χ₀, χ = chiq0chiq(eigvecs, eigvals, phs.action.brillouinzone, phs.action.reciprocalspace, vph, phs.action.energies; η=η, temperature=temperature, μ=μ, scflag=scflag)
     else
+        ecut = get(phs.action.options, :cut_off, Inf)
         if ecut < Inf
             @warn "This mode (cut off energy) is the experimental method."
-            bz₁ = _kpoint_cutoff(ins.action.bz, ecut, mu, tba)
-            χ₀, χ = chiq(tba, bz₁, ins.action.path, vph, ins.action.energies; eta=eta, tem=tem, mu=mu, scflag=scflag, gauge=gauge, ins.action.options...)
+            brillouinzone = _kpoint_cutoff(phs.action.brillouinzone, ecut, μ, tba)
+            χ₀, χ = chiq0chiq(tba, brillouinzone, phs.action.reciprocalspace, vph, phs.action.energies; η=η, temperature=temperature, μ=μ, scflag=scflag, gauge=gauge, phs.action.options...)
         else
-            χ₀, χ = chiq(tba, ins.action.bz, ins.action.path, vph, ins.action.energies; eta=eta, tem=tem, mu=mu, scflag=scflag, gauge=gauge, ins.action.options...)
+            χ₀, χ = chiq0chiq(tba, phs.action.brillouinzone, phs.action.reciprocalspace, vph, phs.action.energies; η=η, temperature=temperature, μ=μ, scflag=scflag, gauge=gauge, phs.action.options...)
         end
-    end 
-    savetag = get(ins.action.options, :save, false)
-    filename = get(ins.action.options, :filename, "chi")
-    savetag && (serialize(join([filename, "0"]), χ₀))
-    if kloc == true 
-        gauge₁ = :rcoordinate
-    else
-        gauge₁ = ( gauge == :rcoordinate ) ? :icoordinate : :rcoordinate
     end
-    ins.data[3][:, :] = correlation(χ, ins.action.path, ins.action.operators, U.table; gauge=gauge₁)
-    ins.data[4][:, :] = correlation(χ₀, ins.action.path, ins.action.operators, U.table; gauge=gauge₁)      
+    get(phs.action.options, :save, false) && (serialize(join([get(phs.action.options, :filename, "chi"), "0"]), χ₀))
+    gauge = findk ? :rcoordinate : gauge==:rcoordinate ? :icoordinate : :rcoordinate
+    phs.data[3][:, :] = correlation(χ, phs.action.reciprocalspace, phs.action.operators, int.table; gauge=gauge)
+    phs.data[4][:, :] = correlation(χ₀, phs.action.reciprocalspace, phs.action.operators, int.table; gauge=gauge)
 end
-function _kpoint_cutoff(bz::ReciprocalZone, ecut::Float64, mu::Float64, tba::AbstractTBA)
-    res = Vector{Float64}[]
-    for k in bz
-        F = eigen(matrix(tba; k=k, gauge=:icoordinate)) 
-        minimum(abs, F.values .- mu) > ecut || push!(res, Vector(k))
+function _kpoint_cutoff(brillouinzone::BrillouinZone, ecut::Float64, μ::Float64, tba::AbstractTBA)
+    result = eltype(brillouinzone)[]
+    for k in brillouinzone
+        eigensystem = eigen(matrix(tba; k=k, gauge=:icoordinate))
+        minimum(abs, eigensystem.values .- μ)>ecut || push!(result, k)
     end
-    return res
+    return result
 end
-"""
-    matrix!(m::Matrix{<:Number}, operators::Operators, table::Table, k; gauge=:rcoordinate)
 
-Return the matrix representation of `operators`.
 """
-function matrix!(m::Matrix{<:Number}, operators::Operators, table::Table, k; gauge=:rcoordinate)
-    m[:, :] .= zero(eltype(m))
-    for op in operators
-        phase = gauge == :icoordinate ? one(eltype(m)) : convert(eltype(m), exp(1im*dot(k, op[1].rcoordinate - op[1].icoordinate))) 
-        seq₁ = table[op[1].index']
-        seq₂ = table[op[2].index]
-        m[seq₁, seq₂] += op.value*phase
-    end
-    return m
-end
-"""
-    correlation(χ::Array{<:Number, 4}, path::Union{ReciprocalPath, ReciprocalZone}, operators::Tuple{AbstractVector{S}, AbstractVector{S}}, table; gauge=:rcoordinate) where {S <: Operators} -> Matrix
+    correlation(χ::Array{<:Number, 4}, reciprocalspace::ReciprocalSpace, operators::Tuple{Vector{<:Operators}, Vector{<:Operators}}, table; gauge=:rcoordinate) -> Matrix
 
 Return physical particle-hole susceptibility.
 """
-function correlation(χ::Array{<:Number, 4}, path::Union{ReciprocalPath, ReciprocalZone}, operators::Tuple{AbstractVector{S}, AbstractVector{S}}, table; gauge=:rcoordinate) where {S <: Operators}
-    nop₁ = length(operators[1])
-    @assert length(operators[1]) == length(operators[2]) "correlation error: the number of left operators must be equal to that of right operators."
+function correlation(χ::Array{<:Number, 4}, reciprocalspace::ReciprocalSpace, operators::Tuple{Vector{<:Operators}, Vector{<:Operators}}, table; gauge=:rcoordinate)
+    @assert length(operators[1])==length(operators[2]) "correlation error: the number of left operators must be equal to that of right operators."
     n = length(table)
     m₁ = zeros(ComplexF64, n, n)
-    m₂ = zeros(ComplexF64, n, n) 
+    m₂ = zeros(ComplexF64, n, n)
     nw, nq = size(χ, 3), size(χ, 4)
     χm = reshape(χ, n, n, n, n, nw, nq)
-    res = zeros(eltype(χ), nw, nq)
-    for (i, momentum) in enumerate(path)
-        for i1 in 1:nop₁
-            ops₁ = operators[1][i1]
-            ops₂ = operators[2][i1]
+    nop = length(operators[1])
+    result = zeros(eltype(χ), nw, nq)
+    for (i, momentum) in enumerate(reciprocalspace)
+        for l in 1:nop
+            ops₁ = operators[1][l]
+            ops₂ = operators[2][l]
             matrix!(m₁, ops₁, table, momentum; gauge=gauge)
-            matrix!(m₂, ops₂, table, -momentum; gauge=gauge)   
+            matrix!(m₂, ops₂, table, -momentum; gauge=gauge)
             for a in 1:n
                 for b in 1:n
                     for c in 1:n
                         for d in 1:n
-                            res[:, i] += χm[a, b, c, d, :, i]*m₁[b, a]*m₂[c, d]
+                            result[:, i] += m₁[b, a] * m₂[c, d] * χm[a, b, c, d, :, i]
                         end
                     end
                 end
             end
         end
     end
-    return res 
+    return result
+end
+function matrix!(m::Matrix{<:Number}, operators::Operators, table::Table, k; gauge=:rcoordinate)
+    m[:, :] .= zero(eltype(m))
+    for op in operators
+        phase = gauge==:icoordinate ? one(eltype(m)) : convert(eltype(m), exp(1im*dot(k, op[1].rcoordinate-op[1].icoordinate)))
+        seq₁ = table[op[1].index']
+        seq₂ = table[op[2].index]
+        m[seq₁, seq₂] += op.value * phase
+    end
+    return m
 end
 
 """
-    fermifunc(e::T, temperature::T=1e-12, mu::T=0.0) where {T<:Real} -> Float64
+    fermifunc(e::Real, temperature::Real=1e-12, μ::Real=0.0) -> Float64
  
-Fermi distribution function. Boltzmann constant kb = 1.
+Fermi distribution function. Boltzmann constant ``k_B=1``.
 """
-function fermifunc(e::T, temperature::T=1e-12, mu::T=0.0) where {T<:Real}
+function fermifunc(e::Real, temperature::Real=1e-12, μ::Real=0.0)
     if temperature > 1e-10
-        f = (e - mu)/temperature
+        f = (e-μ) / temperature
         if f > 20
             f = 0.0
         elseif f < -20
             f = 1.0
         else
-            f = 1/(1 + exp(f))
+            f = 1.0 / (1+exp(f))
         end
     else
-        f = e - mu
+        f = e - μ
         if f > 0.0
             f = 0.0
         else
             f = 1.0
         end
-    end        
+    end
     return f
 end
 
-"""
-    _chikq0(tba::AbstractTBA, k::AbstractVector, q::AbstractVector, omega::Float64; 
-    eta::Float64=0.01, tem::Float64=1e-12, mu::Float64=0.0, kwargs...)
-
-Return chi0(k,q)_{ij,mn}= chi0(k,q)_{-+,+-}, chi0(k,q)_{12,34}== <c^\\dagger_{k,2}c_{k-q ,1}c^\\dagger_{k-q,3}c_{k,4}> 
-"""
-function _chikq0(
-    tba::AbstractTBA, k::AbstractVector, q::AbstractVector, omega::Float64; 
-    eta::Float64=0.01, tem::Float64=1e-12, mu::Float64=0.0, kwargs...
-)
-    Fk = eigen(Hermitian(matrix(tba; k=k, kwargs...)))
-    Fkq = eigen(Hermitian(matrix(tba; k=k-q, kwargs...)))
-    n = length(Fk.values)
-    Ek = Fk.values
-    Ekq = Fkq.values
-    temp = diagm([-( fermifunc(Ek[i], tem, mu) - fermifunc(Ekq[j], tem, mu) ) / ( omega + eta*im + Ek[i] - Ekq[j] ) for i=1:n for j = 1:n])
-    u = kron( conj(Fk.vectors), Fkq.vectors )
-    return u*temp*adjoint(u)
+# Return ``chi^0(k, q)_{ij, mn}=chi^0(k, q)_{-+,+-}``, where ``chi^0(k, q)_{12, 34} ≡ <c^\\dagger_{k, 2}c_{k-q, 1}c^\\dagger_{k-q, 3}c_{k, 4}>``.
+@inline function _chikq0(tba::AbstractTBA, k::AbstractVector, q::AbstractVector, omega::Float64; scflag::Bool, η::Float64=0.01, temperature::Float64=1e-12, μ::Float64=0.0, kwargs...)
+    Ek, uk = eigen(Hermitian(matrix(tba; k=k, kwargs...)))
+    Ekq, ukq = eigen(Hermitian(matrix(tba; k=k-q, kwargs...)))
+    return _chikq0(Ek, Ekq, uk, ukq, omega; scflag=scflag, η=η, temperature=temperature, μ=μ)
 end
-
-function _chikqsc0(
-    tba::AbstractTBA, k::AbstractVector, q::AbstractVector, omega::Float64; 
-    eta::Float64=0.01, tem::Float64=1e-12, mu::Float64=0.0, kwargs...
-)
-    Fk = eigen(Hermitian(matrix(tba; k=k, kwargs...)))
-    Fkq = eigen(Hermitian(matrix(tba; k=k-q, kwargs...)))
-    n = length(Fk.values)
-    @assert mod(n, 2) == 0 "chikqsc0 error: even dimension for Hamiltonian"
-    m = n ÷ 2
-    Ek = Fk.values
-    Ekq = Fkq.values
-    temp = diagm([ (fermifunc(Ek[i], tem, mu) - fermifunc(Ekq[j], tem, mu)) / ( omega + eta*im + Ek[i] - Ekq[j] ) for i=1:n for j = 1:n])
-    uk = Fk.vectors[1:m, :]
-    vk = Fk.vectors[m+1:n, :]
-    ukq = Fkq.vectors[1:m, :]
-    vkq = Fkq.vectors[m+1:n, :]
-    u = kron(conj(uk), ukq)
-    vtemp = kron(vk, conj(vkq))
-    v = reshape( permutedims( reshape(vtemp, (m, m, n*n)), [3, 2, 1] ), (n*n, m*m))
-    return -u*temp*adjoint(u) + u*temp*v
-end
-
-function _chikq0(Ek::Vector{Float64}, Ekq::Vector{Float64}, uk::Matrix{ComplexF64}, ukq::Matrix{ComplexF64}, omega::Float64; eta::Float64=0.01, tem::Float64=1e-12, mu::Float64=0.0)
+function _chikq0(Ek::Vector{Float64}, Ekq::Vector{Float64}, uk::Matrix{ComplexF64}, ukq::Matrix{ComplexF64}, omega::Float64; scflag::Bool, η::Float64=0.01, temperature::Float64=1e-12, μ::Float64=0.0)
     n = length(Ek)
-    temp = diagm([ -( fermifunc(Ek[i], tem, mu) - fermifunc(Ekq[j], tem, mu) ) / ( omega + eta*im + Ek[i] - Ekq[j] ) for i=1:n for j=1:n])
-    u = kron( conj(uk), ukq )
-    return u*temp*adjoint(u)
-end
-function _chikqsc0(Ek::Vector{Float64}, Ekq::Vector{Float64}, uk::Matrix{ComplexF64}, ukq::Matrix{ComplexF64}, omega::Float64; eta::Float64=0.01, tem::Float64=1e-12, mu::Float64=0.0)
-    n = length(Ek)
-    temp = diagm([ (fermifunc(Ek[i], tem, mu) - fermifunc(Ekq[j], tem, mu)) / (omega + eta*im + Ek[i] - Ekq[j]) for i=1:n for j=1:n])
-    m = Int( n/2 )
-    uk0  = uk[1:m, :]
-    vk0  = uk[m + 1:n, :]
-    ukq0 = ukq[1:m, :]
-    vkq0 = ukq[m + 1:n, :]
-    u = kron(conj(uk0), ukq0)
-    vtemp = kron(vk0, conj(vkq0))
-    v = reshape( permutedims( reshape(vtemp, (m, m, n*n)), [3, 2, 1] ), (n*n, m*m))
-    return -u*temp*adjoint(u) + u*temp*v
+    if scflag
+        @assert iseven(n) "_chikq0 error: odd dimension when pairing terms exist."
+        temp = diagm([(fermifunc(Ek[i], temperature, μ)-fermifunc(Ekq[j], temperature, μ))/(omega+η*im+Ek[i]-Ekq[j]) for i=1:n for j=1:n])
+        m = Int(n/2)
+        u = kron(conj(uk[1:m, :]), ukq[1:m, :])
+        v = reshape(permutedims(reshape(kron(uk[m+1:n, :], conj(ukq[m+1:n, :])), (m, m, n*n)), [3, 2, 1]), (n*n, m*m))
+        return -u*temp*adjoint(u) + u*temp*v
+    else
+        temp = diagm([-(fermifunc(Ek[i], temperature, μ)-fermifunc(Ekq[j], temperature, μ))/(omega+η*im+Ek[i]-Ekq[j]) for i=1:n for j=1:n])
+        u = kron(conj(uk), ukq)
+        return u*temp*adjoint(u)
+    end
 end
 
-"""                
-    chiq(
-        tba::AbstractTBA, 
-        bz::AbstractVector{<:AbstractVector}, 
-        path::Union{ReciprocalPath, ReciprocalZone}, 
-        vph::Array{T,3}, omegam::AbstractVector; 
-        eta::Float64=0.01, 
-        tem::Float64=1e-12, 
-        mu::Float64=0.0, 
-        scflag=false, 
-        kwargs...
-    ) where T<:Number -> Tuple{ Array{ComplexF64, 4}, Array{ComplexF64, 4} }            
+"""
+    chiq0chiq(
+        tba::AbstractTBA, brillouinzone::AbstractVector{<:AbstractVector}, reciprocalspace::ReciprocalSpace, vph::Array{<:Number, 3}, energies::AbstractVector;
+        η::Float64=0.01, temperature::Float64=1e-12, μ::Float64=0.0, scflag=false, kwargs...
+    ) -> Tuple{Array{ComplexF64, 4}, Array{ComplexF64, 4}}
 
-Get the particle-hole susceptibilities χ⁰(ω,q) and χ(ω,q). The spectrum function is satisfied by A(ω,q) = Im[χ(ω+i*0⁺,q)].
+Get the particle-hole susceptibilities χ⁰(ω, q) and χ(ω, q). The spectral function is satisfied by ``A(ω, q) = \\text{Im}[χ(ω+i0⁺, q)]``.
 
 # Arguments
-- `vph` is the bare particle-hole vertex (vph[ndim,ndim,nq])
-- `omegam` store the energy points
-- `eta` is the magnitude of broaden
-- `tem` is the temperature
-- `mu` is the chemical potential
-- `scflag` == false (default, no superconductivity), or true ( BdG model)
-- `kwargs` is transfered to `matrix(tba; kwargs...)` function
-"""             
-function chiq(
-    tba::AbstractTBA, 
-    bz::AbstractVector{<:AbstractVector}, 
-    path::Union{ReciprocalPath, ReciprocalZone}, 
-    vph::Array{T,3}, 
-    omegam::AbstractVector; 
-    eta::Float64=0.01, 
-    tem::Float64=1e-12, 
-    mu::Float64=0.0, 
-    scflag=false, 
-    kwargs...
-) where T<:Number
-    nk = length(bz)
-    nq = length(path)
-    nw = length(omegam)
+- `vph`: the bare particle-hole vertex (vph[ndim, ndim, nq])
+- `energies`: the energy points
+- `η`: the magnitude of broaden
+- `temperature`: the temperature
+- `μ`: the chemical potential
+- `scflag`: false (default, no superconductivity), or true (BdG model)
+- `kwargs`: the keyword arguments transferred to the `matrix(tba; kwargs...)` function
+"""
+function chiq0chiq(
+    tba::AbstractTBA, brillouinzone::AbstractVector{<:AbstractVector}, reciprocalspace::ReciprocalSpace, vph::Array{<:Number, 3}, energies::AbstractVector;
+    η::Float64=0.01, temperature::Float64=1e-12, μ::Float64=0.0, scflag=false, kwargs...
+)
+    nk = length(brillouinzone)
+    nq = length(reciprocalspace)
+    nw = length(energies)
     ndim = size(vph, 1)
     chi0 = SharedArray{ComplexF64}(ndim, ndim, nw, nq)
     chi = SharedArray{ComplexF64}(ndim, ndim, nw, nq)
     idmat = Matrix{Float64}(I, ndim, ndim)
-    if scflag == false              
-        @sync @distributed for j = 1:nq*nw #iq=1:nq
-            iq, iw = fldmod1(j, nw)
-            q = path[iq]
-            ω = omegam[iw]
-            chi0[:, :, iw, iq] = @distributed (+) for i = 1:nk
-                1/nk*_chikq0(tba, bz[i], q, ω; eta=eta, tem=tem, mu=mu, kwargs...)
-            end
-            chi[:, :, iw, iq] = chi0[:, :, iw, iq]*inv(idmat + vph[:, :, iq]*chi0[:, :, iw, iq])
-        end
-    else
-        @sync @distributed for j = 1:nq*nw #iq=1:nq
-            iq, iw = fldmod1(j, nw)
-            q = path[iq]
-            ω = omegam[iw]
-            chi0[:, :, iw, iq] = @distributed (+) for i = 1:nk
-                1/nk*_chikqsc0(tba, bz[i], q, ω; eta=eta, tem=tem, mu=mu, kwargs...)
-            end
-            chi[:, :, iw, iq] = chi0[:, :, iw, iq]*inv(idmat + vph[:, :, iq]*chi0[:, :, iw, iq])
-        end
-    end
-    return Array(chi0), Array(chi)
-end
-
-"""
-    findk(kq::AbstractVector, bz::ReciprocalZone) -> Int
-
-Find the index of k point in the reduced Brillouin Zone `bz`, i.e. bz[result] ≈ kq
-"""
-function findk(kq::AbstractVector, bz::ReciprocalZone)
-    @assert length(kq) == length(eltype(bz.reciprocals)) "findk error: dismatch of k-space dimension "
-    n = length(bz.bounds)
-    stepk = zeros(Float64, length(kq), n)
-    nab = Int[]
-    for (i, segment) in enumerate(bz.bounds)
-        push!(nab, segment.length)
-        step = segment[2] - segment[1]
-        stepk[:, i] += bz.reciprocals[i]*step
-    end
-    orign = bz.momenta[1]
-    x = stepk\(kq - orign)
-    intx = round.(Int, x)
-    res = reverse(map(mod, intx, nab) .+ 1)
-    nabc = cumprod(reverse(nab))
-    res0 = 0
-    for i = n:-1:2
-        res0 += (res[i] - 1)*nabc[i - 1]
-    end
-    res0 += res[1]
-    return res0
-end
-"""
-    chiq(eigenvc::Array{ComplexF64, 3}, eigenval::Array{Float64, 2}, bz::ReciprocalZone, path::Union{ReciprocalPath, ReciprocalZone}, vph::Array{T, 3}, omegam::Vector{Float64}; eta::Float64=0.01, tem::Float64=1e-12, mu::Float64=0.0, scflag=false) where T<:Number -> Tuple{ Array{ComplexF64, 4}, Array{ComplexF64, 4} } 
-    
-"""     
-function chiq(eigenvc::Array{ComplexF64,3}, eigenval::Array{Float64,2}, bz::ReciprocalZone, path::Union{ReciprocalPath, ReciprocalZone}, vph::Array{T,3}, omegam::AbstractVector; eta::Float64=0.01, tem::Float64=1e-12, mu::Float64=0.0, scflag=false) where T<:Number
-    nk = length(bz)
-    nq = length(path)
-    nw = length(omegam)
-    ndim = size(vph, 1)
-    chi0 = SharedArray{ComplexF64}(ndim, ndim, nw, nq)
-    chi = SharedArray{ComplexF64}(ndim, ndim, nw, nq)
-    idmat = Matrix{Float64}(I, ndim, ndim)
-    if scflag == false
-        @sync @distributed for j = 1:nq*nw 
+    @sync @distributed for j = 1:nq*nw #iq=1:nq
         iq, iw = fldmod1(j, nw)
-        q = path[iq]
-        ω = omegam[iw]
-        chi0[:,:,iw,iq] = @distributed (+) for i = 1:nk
-            kq = bz[i] - q
-            ikq = findk(kq, bz)
-            1/nk*_chikq0(eigenval[:, i], eigenval[:, ikq], eigenvc[:, :, i], eigenvc[:, :, ikq], ω; eta=eta, tem=tem, mu=mu)
-        end
-            chi[:, :, iw, iq] = chi0[:, :, iw, iq]*inv(idmat + vph[:, :, iq]*chi0[:, :, iw, iq])
-        end
-    else
-        @sync @distributed for j = 1:nq*nw 
-        iq, iw = fldmod1(j,nw)
-        q = path[iq]
-        ω = omegam[iw]
+        q = reciprocalspace[iq]
+        ω = energies[iw]
         chi0[:, :, iw, iq] = @distributed (+) for i = 1:nk
-            kq = bz[i] - q
-            ikq = findk(kq, bz)
-            1/nk*_chikqsc0(eigenval[:, i], eigenval[:, ikq], eigenvc[:, :, i], eigenvc[:, :, ikq], ω; eta=eta, tem=tem, mu=mu)
+            1/nk*_chikq0(tba, brillouinzone[i], q, ω; scflag=scflag, η=η, temperature=temperature, μ=μ, kwargs...)
         end
-            chi[:, :, iw, iq] = chi0[:, :, iw, iq]*inv(idmat + vph[:, :, iq]*chi0[:, :, iw, iq])
-        end
+        chi[:, :, iw, iq] = chi0[:, :, iw, iq] * inv(idmat+vph[:, :, iq]*chi0[:, :, iw, iq])
     end
     return Array(chi0), Array(chi)
 end
 
-"""                
-    chiq0(tba::AbstractTBA, bz::ReciprocalZone, path::Union{ReciprocalPath, ReciprocalZone}, omegam::Vector{Float64}; eta::Float64=0.01, tem::Float64=1e-12, mu::Float64=0.0, scflag=false, kwargs...) -> Array{Float64, 4}
+"""
+    chiq0chiq(
+        eigvecs::Array{ComplexF64, 3}, eigvals::Array{Float64, 2}, brillouinzone::BrillouinZone, reciprocalspace::ReciprocalSpace, vph::Array{<:Number, 3}, energies::Vector{Float64};
+        η::Float64=0.01, temperature::Float64=1e-12, μ::Float64=0.0, scflag=false
+    ) -> Tuple{Array{ComplexF64, 4}, Array{ComplexF64, 4}}
 
-Get the particle-hole susceptibilities χ⁰(ω,q).\\
-`omegam` store the energy points;\\
-`eta` is the magnitude of broaden;\\
-`tem` is the temperature;\\
-`mu` is the chemical potential.\\
-'kwargs' is transfered to `matrix(tba;kwargs...)` function\\
-`scflag` == false(default) => particle-hole channel, ==true => Nambu space.
+Get the particle-hole susceptibilities χ⁰(ω, q) and χ(ω, q). The spectral function is satisfied by ``A(ω, q) = \\text{Im}[χ(ω+i0⁺, q)]``.
+"""
+function chiq0chiq(
+    eigvecs::Array{ComplexF64,3}, eigvals::Array{Float64,2}, brillouinzone::BrillouinZone, reciprocalspace::ReciprocalSpace, vph::Array{<:Number, 3}, energies::AbstractVector;
+    η::Float64=0.01, temperature::Float64=1e-12, μ::Float64=0.0, scflag=false
+)
+    nk = length(brillouinzone)
+    nq = length(reciprocalspace)
+    nw = length(energies)
+    ndim = size(vph, 1)
+    chi0 = SharedArray{ComplexF64}(ndim, ndim, nw, nq)
+    chi = SharedArray{ComplexF64}(ndim, ndim, nw, nq)
+    idmat = Matrix{Float64}(I, ndim, ndim)
+    @sync @distributed for j = 1:nq*nw
+        iq, iw = fldmod1(j, nw)
+        q = reciprocalspace[iq]
+        ω = energies[iw]
+        chi0[:, :, iw, iq] = @distributed (+) for i = 1:nk
+            ikq = Int(keytype(brillouinzone)(brillouinzone[i]-q, brillouinzone.reciprocals))
+            1/nk*_chikq0(eigvals[:, i], eigvals[:, ikq], eigvecs[:, :, i], eigvecs[:, :, ikq], ω; scflag=scflag, η=η, temperature=temperature, μ=μ)
+        end
+        chi[:, :, iw, iq] = chi0[:, :, iw, iq] * inv(idmat+vph[:, :, iq]*chi0[:, :, iw, iq])
+    end
+    return Array(chi0), Array(chi)
+end
+
+"""
+    chiq0(tba::AbstractTBA, brillouinzone::BrillouinZone, reciprocalspace::ReciprocalSpace, energies::Vector{Float64}; η::Float64=0.01, temperature::Float64=1e-12, μ::Float64=0.0, scflag=false, kwargs...) -> Array{Float64, 4}
+
+Get the particle-hole susceptibilities χ⁰(ω, q).
+
+# Arguments
+- `energies`: the energy points
+- `η`: the magnitude of broaden
+- `temperature`: the temperature
+- `μ`: the chemical potential
+- `scflag`: false(default) for particle-hole channel, true for Nambu space
+- `kwargs`: the keyword arguments transferred to the `matrix(tba; kwargs...)` function
 """  
-function chiq0(tba::AbstractTBA, bz::ReciprocalZone, path::Union{ReciprocalPath, ReciprocalZone}, omegam::AbstractVector; eta::Float64=0.01, tem::Float64=1e-12, mu::Float64=0.0, scflag=false, kwargs...)
-    nk = length(bz)
-    nq = length(path)
-    nw = length(omegam)
+function chiq0(tba::AbstractTBA, brillouinzone::BrillouinZone, reciprocalspace::ReciprocalSpace, energies::AbstractVector; η::Float64=0.01, temperature::Float64=1e-12, μ::Float64=0.0, scflag=false, kwargs...)
+    nk = length(brillouinzone)
+    nq = length(reciprocalspace)
+    nw = length(energies)
     ndim = dimension(tba)
     chi0 = zeros(ComplexF64, ndim^2, ndim^2, nw, nq)
-    if scflag == false
-        for iq = 1:nq
-            for iw = 1:nw
-                for i = 1:nk
-                    chi0[:,:,iw,iq] += 1/nk*_chikq0(tba, bz[i], path[iq], omegam[iw]; eta=eta, tem=tem, mu=mu, kwargs...)
-                end
+    for iq = 1:nq
+        for iw = 1:nw
+            for i = 1:nk
+                chi0[:, :, iw, iq] += 1/nk*_chikq0(tba, brillouinzone[i], reciprocalspace[iq], energies[iw]; scflag=scflag, η=η, temperature=temperature, μ=μ, kwargs...)
             end
         end
-    else
-        for iq = 1:nq
-            for iw = 1:nw
-                for i = 1:nk
-                    chi0[:, :, iw, iq] += 1/nk*_chikqsc0(tba, bz[i], path[iq], omegam[iw]; eta=eta, tem=tem, mu=mu, kwargs...)
-                end
-            end
-        end   
     end
     return chi0
 end
-"""
-    chiq(vph::Array{T, 3}, chi0::Array{ComplexF64, 4}) where T<:Number -> Array{ComplexF64, 4}
 
-Get the susceptibility χ_{αβ}(ω,q).
 """
-function chiq(vph::Array{T,3}, chi0::Array{ComplexF64,4}) where T<:Number
+    chiq(vph::Array{<:Number, 3}, chi0::Array{ComplexF64, 4}) -> Array{ComplexF64, 4}
+
+Get the susceptibility ``χ_{αβ}(ω, q)``.
+"""
+function chiq(vph::Array{<:Number, 3}, chi0::Array{ComplexF64,4})
     nq = size(chi0, 4)
     nw = size(chi0, 3)
-    ndim = size(vph, 1)                                
+    ndim = size(vph, 1)
     chi = zeros(ComplexF64, ndim, ndim, nw, nq)
     idmat = Matrix{Float64}(I, ndim, ndim)
     for iq = 1:nq
         for iw = 1:nw
-            chi[:, :, iw, iq] = chi0[:, :, iw, iq]*inv(idmat + vph[:, :, iq]*chi0[:, :, iw, iq])
-        end
-    end
-    return chi
-end         
-                
-# eigenproblem of RPA
-"""
-    EigenRPA{P<:Union{ReciprocalPath,ReciprocalZone}, RZ<:ReciprocalZone} <: Action
-
-Eigenproblem for standard random phase approximation. 
-"""
-struct EigenRPA{P<:Union{ReciprocalPath,ReciprocalZone}, RZ<:ReciprocalZone} <: Action
-    path::P
-    bz::RZ
-    onlyvalue::Bool
-    options::Dict{Symbol, Any}
-    function EigenRPA(path::Union{ReciprocalPath,ReciprocalZone}, bz::ReciprocalZone, onlyvalue::Bool, options::Dict{Symbol, Any}) 
-        @assert keys(path) == (:k,) "ParticleHoleSusceptibility error: the name of the momenta in the path must be :k."
-        new{typeof(path), typeof(bz)}(path, bz, onlyvalue, options)
-    end
-end
-"""
-    EigenRPA(path::Union{ReciprocalPath, ReciprocalZone}, bz::ReciprocalZone; onlyvalue::Bool=true,  options...)
-
-Construct a `EigenRPA` type. Attribute `options` contains (gauge=:icoordinate, exchange=false, η=1e-8, temperature=1e-12, μ=0.0, bnd=nothing)
-"""
-@inline function EigenRPA(path::Union{ReciprocalPath,ReciprocalZone}, bz::ReciprocalZone;onlyvalue::Bool=true, options...)
-    EigenRPA(path, bz, onlyvalue, convert(Dict{Symbol, Any}, options))
-end
-
-@inline function initialize(ins::EigenRPA, rpa::RPA)
-    x = collect( Float64, 0:( length(ins.path) - 1 ) )
-    y = Vector{ComplexF64}[]
-    vecs = Matrix{ComplexF64}[]
-    orb2band = Matrix{ComplexF64}[]
-    return x, y, vecs, orb2band
-end
-function run!(rpa::Algorithm{<:RPA}, ins::Assignment{<:EigenRPA})
-    U, tba = rpa.frontend.U, rpa.frontend.tba
-    n = length(U.table)
-    nq = length(ins.action.path)
-    nk = length(ins.action.bz)
-    vph = zeros(ComplexF64, n^2, n^2, nk, nk, nq)
-    gauge = get(ins.action.options, :gauge, :icoordinate)
-    exchange = get(ins.action.options, :exchange, false)
-    if exchange  
-        for (i, q) in enumerate(ins.action.path)
-            for (l, k₂) in enumerate(ins.action.bz)
-                for (j, k₁) in enumerate(ins.action.bz)
-                    vph[:, :, j, l, i] = PHVertexRepresentation{typeof(U)}(q, k₁, k₂, U.table, gauge=gauge)(expand(U))
-                end
-            end  
-        end 
-
-    else
-        for (i, q) in enumerate(ins.action.path)
-            for j in 1:nk
-                for l in 1:nk
-                    vph[:, :, j, l, i] = matrix(rpa.frontend, :U; k=q, gauge=gauge)  
-                end
-            end  
-        end  
-    end
-    η = get(ins.action.options, :η, 1e-8)
-    tem = get(ins.action.options, :temperature, 1e-12)
-    mu = get(ins.action.options, :μ, 0.0)
-    bnd = get(ins.action.options, :bnd, nothing)
-    
-    values, vectors, orb2band = chikqm(tba, ins.action.bz, ins.action.path, vph; tem=tem, mu=mu, onlyvalue=ins.action.onlyvalue, η=η, bnd=bnd, gauge=gauge, ins.action.options...)
-    push!(ins.data[2], values...)
-    push!(ins.data[3], vectors...)
-    push!(ins.data[4], orb2band...)
-end
-
-"""
-    chikqm(tba::AbstractTBA, bz::ReciprocalZone, path::Union{ReciprocalZone, ReciprocalPath}, vph::Array{T,5}; tem::Float64=1e-12, mu::Float64=0.0, onlyvalue::Bool=true, η::Float64=1e-6, bnd::Union{UnitRange{Int}, StepRange{Int,Int}, Vector{Int}, Nothing}=nothing, kwargs...) where T<:Number -> Tuple{ Array{Array{ComplexF64, 1}, 1}, Array{Matrix{ComplexF64}, 1}, Array{Matrix{ComplexF64}, 1}}
-
-
-Get the eigenvalues, eigenvectors, and unitary transformation (from orbital to band) of particle-hole susceptibilities χ_{αβ}(ω,k1,k2,q). Now only the zero-temperature case is supported.\\
-`vph` store the particle-hole vertex,e.g. vph[ndim,ndim,nk,nk,nq] where sqrt(nidm) is the number of degrees of freedom in the unit cell,nk=length(bz), nq=length(path). \\
-`tem` is the temperature;\\
-`mu` is the chemical potential.\\
-`onlyvalue` : only need the eigenvalues ( isval=true,zero temperature ), isval=false denotes that the cholesky method is used.\\
-`η`:small number to advoid the semipositive Hamiltonian,i.e. Hamiltonian+diagm([η,η,...])\\
-`bnd`:select the bands to calculate the χ₀\\
-`kwargs` store the keys which are transfered to `matrix` function.
-"""                     
-function chikqm(tba::AbstractTBA, bz::ReciprocalZone, path::Union{ReciprocalZone, ReciprocalPath}, vph::Array{T,5}; tem::Float64=1e-12, mu::Float64=0.0, onlyvalue::Bool=true, η::Float64=1e-6, bnd::Union{UnitRange{Int}, StepRange{Int, Int}, Vector{Int}, Nothing}=nothing, kwargs...) where T<:Number
-    nk = length(bz)
-    nq = length(path)
-    val = Array{ComplexF64,1}[]
-    vec = Array{ComplexF64,2}[]
-    f2c = Array{ComplexF64,2}[]
-    
-    for iq = 1:nq
-        chi0inv = Float64[]
-        um = Array{ComplexF64,2}[]
-        list = Int[1]
-        g1 = Float64[]
-        for i = 1:nk
-            temp0, tempu, g0 = _chikq03(tba, bz[i], path[iq], 0.0; tem=tem, mu=mu, bnd=bnd, kwargs...)                          
-            push!(um, tempu)
-            push!(chi0inv, temp0...)
-            push!(g1, g0...)
-            n0 = size(tempu, 2)
-            push!(list, n0)
-        end 
-        list0 = cumsum(list)
-        wk = zeros(ComplexF64, list0[end]-1, list0[end]-1)
-        for i = 1:nk
-            for j = 1:nk
-                wk[list0[j]:list0[j+1]-1, list0[i]:list0[i+1]-1] = transpose(conj(um[j]))*vph[:, :, j, i, iq]*um[i]/nk
-            end
-        end
-        temp1 = wk       
-        temp3 = Hermitian(-diagm(chi0inv)*1.0 + 1.0*temp1, :U)
-
-        g = diagm(g1)
-        if onlyvalue 
-            temp2 = eigen(temp3*g)
-        else
-            nd = size(temp3, 1)
-            ck = cholesky(temp3 + diagm([η for i=1:nd]),  NoPivot(); check = true)
-            temp2 = eigen(ck.U*g*ck.L)
-            temp4 = inv(ck.U)*temp2.vectors*diagm(sqrt.(abs.(temp2.values)))
-            push!(vec, temp4)  
-        end
-        push!(val, temp2.values)
-        push!(f2c, hcat(um...))
-    end
-    return val, vec, f2c
-end
-            
-function _chikq03(tba::AbstractTBA, k::AbstractVector, q::AbstractVector, omega::Float64=0.0;tem::Float64=1e-12, mu::Float64=0.0, bnd::Union{UnitRange{Int}, StepRange{Int, Int}, Vector{Int}, Nothing}=nothing, kwargs...)
-    @assert tem < 1e-10 "chikq03 error: now only support the zero temperature (<1e-10) $(tem). "
-    Fk = eigen(Hermitian(matrix(tba; k=k, kwargs...)))
-    Fkq = eigen(Hermitian(matrix(tba; k=k-q, kwargs...)))
-    n = length(Fk.values)
-    if isnothing(bnd)
-        bnd0 = 1:n
-    else
-        bnd0 = bnd
-    end
-    Ek = Fk.values
-    Ekq = Fkq.values
-    ee1 = Float64[]
-    ee2 = Float64[]
-    lit1 = Int[]
-    lit2 = Int[]
-    one1 = Float64[]
-    one2 = Float64[]
-    for i = bnd0
-        for j = bnd0
-            ft = (fermifunc(Ek[i], tem, mu) - fermifunc(Ekq[j], tem, mu))
-            if abs(ft) > eps()
-                if Ek[i] - Ekq[j] < 0.0
-                    push!(lit1, (i-1)*n + j )
-                    push!(ee1, (omega + Ek[i] - Ekq[j])/ft)
-                    push!(one1, 1.0)
-                else Ek[i] - Ekq[j] > 0.0
-                    push!(lit2, (i - 1)*n + j)
-                    push!(ee2, (omega + Ek[i] - Ekq[j])/ft)
-                    push!(one2, -1.0)
-                end                           
-            end
-        end
-    end                                                                    
-    u = kron(conj(Fk.vectors), Fkq.vectors)   
-    ee = vcat(ee1, ee2)
-    uu = zeros(ComplexF64, n*n, length(ee))
-    uu[:, 1:length(ee1)] = u[:, lit1]
-    uu[:, length(ee1)+1:end] = u[:, lit2]
-    return ee, uu, vcat(one1, one2)
-end
-"""
-    projchi(val::Array{Array{T, 1}, 1}, vec::Array{Array{T1, 2}, 1}, f2c::Array{ Array{ComplexF64, 2}, 1}, omegam::Vector{Float64}, eta::Float64=1e-2) where {T<:Number,T1<:Number} -> Array{ComplexF64,4}
-
-Get the ``\\chi_{ij,nm}(\\omega,q)```. The eigenvalues, eigenvectors, and unitary matrix are obtained by method `chikqm`.
-"""
-function projchi(val::Array{Array{T,1},1}, vec::Array{Array{T1, 2}, 1}, f2c::Array{ Array{ComplexF64, 2}, 1 }, omegam::AbstractVector; eta::Float64=1e-2) where {T<:Number, T1<:Number}
-    nq = length(val)
-    nw = length(omegam)
-    ndim, n = size(f2c[1])
-    chi = zeros(ComplexF64, ndim, ndim, nw, nq)
-    for iq = 1:nq
-        for iw = 1:nw
-            tm = vec[iq]
-            tmu = f2c[iq]*tm
-            chi[:, :, iw, iq] = tmu*diagm([ 1/(-omegam[iw] - im*eta + val[iq][i]) for i=1:n ])*(diagm(sign.(val[iq])))*adjoint(tmu)
+            chi[:, :, iw, iq] = chi0[:, :, iw, iq] * inv(idmat+vph[:, :, iq]*chi0[:, :, iw, iq])
         end
     end
     return chi
 end
 
- """
-    projchiim(val::Array{Array{T, 1}, 1}, vec::Array{Array{T1, 2}, 1}, f2c::Array{ Array{ComplexF64, 2}, 1},omegam::Vector{Float64}, eta::Float64=1e-2) where {T<:Number, T1<:Number} -> Array{ComplexF64, 4}
-
-Get the imaginary party of ``\\chi_{ij,nm}(\\omega,q)```. The eigenvalues,eigenvectors, and unitary matrix are obtained by method `chikqm`.
-"""
-function projchiim(val::Array{ Array{T, 1}, 1 }, vec::Array{ Array{T1, 2}, 1 }, f2c::Array{ Array{ComplexF64, 2}, 1}, omegam::AbstractVector; eta::Float64=1e-2) where {T<:Number, T1<:Number}
-    nq = length(val)
-    nw = length(omegam)
-    ndim = size(f2c[1], 1)
-    chi = zeros(ComplexF64, ndim, ndim, nw, nq)   
-    for iq = 1:nq
-        for iw = 1:nw
-            for i = 1:length(val[iq])
-                temp = f2c[iq]*vec[iq][:, i]
-                chi[:, :, iw, iq] += temp*eta/((omegam[iw] - val[iq][i])^2 + eta^2)*adjoint(temp) 
-            end
-        end
-    end
-    return chi
-end         
-
-function save(filename::AbstractString, data::Array{<:Number,4})
-    open(filename, "w") do f
-        writedlm(f, data)
-    end
-
-end
 """
     @recipe plot(pack::Tuple{Algorithm{<:RPA}, Assignment{<:ParticleHoleSusceptibility}}, mode::Symbol=:χ)
 
 Define the recipe for the visualization of particle-hole susceptibilities.
 """
-@recipe function plot(pack::Tuple{Algorithm{<:RPA}, Assignment{<:ParticleHoleSusceptibility}},mode::Symbol=:χ)
+@recipe function plot(pack::Tuple{Algorithm{<:RPA}, Assignment{<:ParticleHoleSusceptibility}}, mode::Symbol=:χ)
     title --> nameof(pack[1], pack[2])
     titlefontsize --> 10
     legend --> true
-    @assert mode == :χ || mode == :χ0 "plot error: mode ∈ (:χ, :χ0)" 
-    if mode == :χ 
+    @assert mode in (:χ, :χ0) "plot error: mode must be one of (:χ, :χ0)."
+    if mode == :χ
         χim0 = imag.(pack[2].data[3])/pi
         colorbar_title := "χ(q, ω)"
     elseif mode == :χ0
         χim0 = imag.(pack[2].data[4])/pi
         colorbar_title := "χ₀(q, ω)"
     end
-    clims = extrema(χim0) 
+    clims = extrema(χim0)
     xlabel := "q"
-    ylabel := "ω"  
-
+    ylabel := "ω"
     @series begin
         seriestype := :heatmap
         clims --> clims
         pack[2].data[1], pack[2].data[2], χim0
-    end  
+    end
 end
+
+"""
+    @recipe plot(pack::Tuple{Algorithm{<:RPA}, Assignment{<:ParticleHoleSusceptibility}}, ecut::Float64, dE::Float64=1e-3, mode::Symbol=:χ, reim::Symbol=:re)
+
+"""
+@recipe function plot(pack::Tuple{Algorithm{<:RPA}, Assignment{<:ParticleHoleSusceptibility}}, ecut::Float64, dE::Float64=1e-3, mode::Symbol=:χ, reim::Symbol=:re)
+    title --> nameof(pack[1], pack[2])
+    titlefontsize --> 10
+    legend --> false
+    xlabel --> "q₁"
+    ylabel --> "q₂"
+    aspect_ratio := :equal
+    @series begin
+        seriestype := :heatmap
+        data = spectralecut(pack[2], ecut, dE, mode)
+        reim == :re && (data = (data[1], data[2], real.(data[3])))
+        reim == :im && (data = (data[1], data[2], imag.(data[3])/pi))
+        data[1], data[2], data[3]
+    end
+end
+function spectralecut(ass::Assignment{<:ParticleHoleSusceptibility}, ecut::Float64, dE::Float64, mode::Symbol=:χ)
+    @assert isa(ass.action.reciprocalspace, ReciprocalZone) "spectralecut error: please input an instance of ReciprocalZone."
+    energies = ass.data[2]
+    f(x) = abs(x-ecut) <= dE ? true : false
+    idx = findall(f, energies)
+    if mode == :χ
+        intensity = ass.data[3]
+    elseif mode == :χ0
+        intensity = ass.data[4]
+    end
+    dims = Int[]
+    seg = []
+    reciprocals = []
+    for (i, bound) in enumerate(ass.action.reciprocalspace.bounds)
+        if bound.length > 1
+            push!(dims, bound.length)
+            push!(seg, bound)
+            push!(reciprocals, ass.action.reciprocalspace.reciprocals[i])
+        end
+    end
+    @assert length(dims)==2 "spectralecut error: the k points is not in a plane."
+    y = collect(seg[2])*norm(reciprocals[2]) #collect(Float64, 0:(dims[2]-1))
+    x = collect(seg[1])*norm(reciprocals[1]) #collect(Float64, 0:(dims[1]-1))
+    z = reshape(sum(intensity[idx, :], dims=1), reverse(dims)...)
+    return (x, y, z)
+end
+
+# eigen problem of RPA
+"""
+    EigenRPA{P<:ReciprocalSpace, B<:BrillouinZone} <: Action
+
+Eigen problem for standard random phase approximation.
+"""
+struct EigenRPA{P<:ReciprocalSpace, B<:BrillouinZone} <: Action
+    reciprocalspace::P
+    brillouinzone::B
+    eigvals_only::Bool
+    options::Dict{Symbol, Any}
+    function EigenRPA(reciprocalspace::ReciprocalSpace, brillouinzone::BrillouinZone, eigvals_only::Bool, options::Dict{Symbol, Any})
+        @assert names(reciprocalspace) == (:k,) "ParticleHoleSusceptibility error: the name of the momenta must be :k."
+        new{typeof(reciprocalspace), typeof(brillouinzone)}(reciprocalspace, brillouinzone, eigvals_only, options)
+    end
+end
+
+"""
+    EigenRPA(reciprocalspace::ReciprocalSpace, brillouinzone::BrillouinZone; eigvals_only::Bool=true, options...)
+
+Construct a `EigenRPA` type. Attribute `options` contains `(gauge=:icoordinate, exchange=false, η=1e-8, temperature=1e-12, μ=0.0, bands=nothing)`.
+"""
+@inline function EigenRPA(reciprocalspace::ReciprocalSpace, brillouinzone::BrillouinZone; eigvals_only::Bool=true, options...)
+    return EigenRPA(reciprocalspace, brillouinzone, eigvals_only, convert(Dict{Symbol, Any}, options))
+end
+
+@inline function initialize(erpa::EigenRPA, rpa::RPA)
+    x = collect(Float64, 0:(length(erpa.reciprocalspace)-1))
+    eigvals = Vector{ComplexF64}[]
+    eigvecs = Matrix{ComplexF64}[]
+    o2bs = Matrix{ComplexF64}[]
+    return x, eigvals, eigvecs, o2bs
+end
+function run!(rpa::Algorithm{<:RPA}, erpa::Assignment{<:EigenRPA})
+    int, tba = rpa.frontend.interactions, rpa.frontend.tba
+    n = length(int.table)
+    nq = length(erpa.action.reciprocalspace)
+    nk = length(erpa.action.brillouinzone)
+    vph = zeros(ComplexF64, n^2, n^2, nk, nk, nq)
+    gauge = get(erpa.action.options, :gauge, :icoordinate)
+    if get(erpa.action.options, :exchange, false)
+        ops = expand(int)
+        for (i, q) in enumerate(erpa.action.reciprocalspace)
+            for (l, k₂) in enumerate(erpa.action.brillouinzone)
+                for (j, k₁) in enumerate(erpa.action.brillouinzone)
+                    vph[:, :, j, l, i] = PHVertexMatrix{valtype(eltype(int))}(q, k₁, k₂, int.table, gauge=gauge)(ops)
+                end
+            end  
+        end
+    else
+        for (i, q) in enumerate(erpa.action.reciprocalspace)
+            for j in 1:nk
+                for l in 1:nk
+                    vph[:, :, j, l, i] = matrix(rpa.frontend, :int; k=q, gauge=gauge)
+                end
+            end
+        end
+    end
+    η = get(erpa.action.options, :η, 1e-8)
+    temperature = get(erpa.action.options, :temperature, 1e-12)
+    μ = get(erpa.action.options, :μ, 0.0)
+    bands = get(erpa.action.options, :bands, nothing)
+    eigvals, eigvecs, o2bs = eigenrpa(tba, erpa.action.brillouinzone, erpa.action.reciprocalspace, vph; temperature=temperature, μ=μ, eigvals_only=erpa.action.eigvals_only, η=η, bands=bands, gauge=gauge, erpa.action.options...)
+    push!(erpa.data[2], eigvals...)
+    push!(erpa.data[3], eigvecs...)
+    push!(erpa.data[4], o2bs...)
+end
+
+"""
+    eigenrpa(
+        tba::AbstractTBA, brillouinzone::BrillouinZone, reciprocalspace::ReciprocalSpace, vph::Array{<:Number, 5};
+        temperature::Float64=1e-12, μ::Float64=0.0, eigvals_only::Bool=true, η::Float64=1e-6, bands::Union{UnitRange{Int}, StepRange{Int,Int}, Vector{Int}, Nothing}=nothing, kwargs...
+    ) -> Tuple{Array{Array{ComplexF64, 1}, 1}, Array{Matrix{ComplexF64}, 1}, Array{Matrix{ComplexF64}, 1}}
+
+
+Get the eigenvalues, eigenvectors, and unitary transformation (from orbital to band) of particle-hole susceptibilities ``χ_{αβ}(ω, k₁, k₂, q)``.
+
+Now only the zero-temperature case is supported.
+
+# Arguments
+- `vph`: the particle-hole vertex, e.g. vph[ndim,ndim,nk,nk,nq] where sqrt(ndim) is the number of degrees of freedom in the unit cell, nk=length(brillouinzone), nq=length(reciprocalspace)
+- `temperature`: the temperature
+- `μ`: the chemical potential
+- `eigvals_only`: only the eigenvalues needed, when it is false the cholesky method is used
+- `η`: the small number to avoid the semi-positive Hamiltonian, i.e. Hamiltonian+diagm([η, η, ...])
+- `bands`: the selected bands to calculate the χ₀
+- `kwargs`: the keyword arguments transferred to the `matrix(tba; kwargs...)` function
+"""
+function eigenrpa(
+    tba::AbstractTBA, brillouinzone::BrillouinZone, reciprocalspace::ReciprocalSpace, vph::Array{<:Number, 5};
+    temperature::Float64=1e-12, μ::Float64=0.0, eigvals_only::Bool=true, η::Float64=1e-6, bands::Union{UnitRange{Int}, StepRange{Int, Int}, Vector{Int}, Nothing}=nothing, kwargs...
+)
+    nk = length(brillouinzone)
+    nq = length(reciprocalspace)
+    eigvals = Array{ComplexF64,1}[]
+    eigvecs = Array{ComplexF64,2}[]
+    o2bs = Array{ComplexF64,2}[]
+    for iq = 1:nq
+        chi0inv = Float64[]
+        um = Array{ComplexF64,2}[]
+        list = Int[1]
+        g = Float64[]
+        for i = 1:nk
+            temp0, tempu, g0 = _chikq03(tba, brillouinzone[i], reciprocalspace[iq], 0.0; temperature=temperature, μ=μ, bands=bands, kwargs...)
+            push!(um, tempu)
+            push!(chi0inv, temp0...)
+            push!(g, g0...)
+            push!(list, size(tempu, 2))
+        end
+        list = cumsum(list)
+        wk = zeros(ComplexF64, list[end]-1, list[end]-1)
+        for i = 1:nk
+            for j = 1:nk
+                wk[list[j]:list[j+1]-1, list[i]:list[i+1]-1] = transpose(conj(um[j]))*vph[:, :, j, i, iq]*um[i]/nk
+            end
+        end
+        heff = Hermitian(-diagm(chi0inv)+wk, :U)
+        if eigvals_only
+            eigensystem = eigen(heff*diagm(g))
+        else
+            ck = cholesky(heff+diagm([η for i=1:size(heff, 1)]), NoPivot(); check=true)
+            eigensystem = eigen(ck.U*diagm(g)*ck.L)
+            push!(eigvecs, inv(ck.U)*eigensystem.vectors*diagm(sqrt.(abs.(eigensystem.values))))
+        end
+        push!(eigvals, eigensystem.values)
+        push!(o2bs, hcat(um...))
+    end
+    return eigvals, eigvecs, o2bs
+end
+function _chikq03(tba::AbstractTBA, k::AbstractVector, q::AbstractVector, omega::Float64=0.0; temperature::Float64=1e-12, μ::Float64=0.0, bands::Union{UnitRange{Int}, StepRange{Int, Int}, Vector{Int}, Nothing}=nothing, kwargs...)
+    @assert temperature < 1e-10 "_chikq03 error: now only support the zero temperature (<1e-10) $(temperature). "
+    n = dimension(tba)
+    isnothing(bands) && (bands = 1:n)
+    Ek, uk = eigen(Hermitian(matrix(tba; k=k, kwargs...)))
+    Ekq, ukq = eigen(Hermitian(matrix(tba; k=k-q, kwargs...)))
+    ee1, lit1, one1 = Float64[], Int[], Float64[]
+    ee2, lit2, one2 = Float64[], Int[], Float64[]
+    for i in bands
+        for j in bands
+            ft = fermifunc(Ek[i], temperature, μ) - fermifunc(Ekq[j], temperature, μ)
+            if abs(ft) > eps()
+                if Ek[i] - Ekq[j] < 0.0
+                    push!(lit1, (i-1)*n+j)
+                    push!(ee1, (omega+Ek[i]-Ekq[j])/ft)
+                    push!(one1, 1.0)
+                else Ek[i] - Ekq[j] > 0.0
+                    push!(lit2, (i-1)*n+j)
+                    push!(ee2, (omega+Ek[i]-Ekq[j])/ft)
+                    push!(one2, -1.0)
+                end
+            end
+        end
+    end
+    u = kron(conj(uk), ukq)
+    ee = vcat(ee1, ee2)
+    uu = zeros(ComplexF64, n*n, length(ee))
+    uu[:, 1:length(ee1)] = u[:, lit1]
+    uu[:, length(ee1)+1:end] = u[:, lit2]
+    return ee, uu, vcat(one1, one2)
+end
+
+"""
+    chiq(eigvals::Vector{Vector{<:Number}}, eigvecs::Vector{Matrix{<:Number}}, o2bs::Vector{Matrix{ComplexF64}}, energies::AbstractVector; η::Float64=1e-2, imag_only::Bool=false) -> Array{ComplexF64, 4}
+
+Get the ``\\chi_{ij, nm}(\\omega, q)``. When `imag_only` is true, only the imaginary part is calculated.
+
+Here, the eigenvalues, eigenvectors, and the orbital-to-band unitary matrices should be obtained by the method `eigenrpa`.
+"""
+function chiq(eigvals::Vector{Vector{<:Number}}, eigvecs::Vector{Matrix{<:Number}}, o2bs::Vector{Matrix{ComplexF64}}, energies::AbstractVector; η::Float64=1e-2, imag_only::Bool=false)
+    nq = length(eigvals)
+    nw = length(energies)
+    ndim = size(o2bs[1], 1)
+    chi = zeros(ComplexF64, ndim, ndim, nw, nq)
+    if imag_only
+        for iq = 1:nq
+            for iw = 1:nw
+                for i = 1:length(eigvals[iq])
+                    temp = o2bs[iq] * eigvecs[iq][:, i]
+                    chi[:, :, iw, iq] += temp * η / ((energies[iw]-eigvals[iq][i])^2+η^2) * adjoint(temp)
+                end
+            end
+        end
+    else
+        n = size(o2bs[1], 2)
+        for iq = 1:nq
+            for iw = 1:nw
+                tm = eigvecs[iq]
+                tmu = o2bs[iq]*tm
+                chi[:, :, iw, iq] = tmu * diagm([1/(-energies[iw]-im*η+eigvals[iq][i]) for i=1:n]) * (diagm(sign.(eigvals[iq]))) * adjoint(tmu)
+            end
+        end
+    end
+    return chi
+end
+
 """
     @recipe plot(pack::Tuple{Algorithm{<:RPA}, Assignment{<:EigenRPA}})
 
@@ -883,124 +781,23 @@ Define the recipe for the visualization of particle-hole susceptibilities.
     legend --> false
     n = length(pack[2].data[2][end])
     nq = length(pack[2].data[2])
-    rpa_val = zeros(ComplexF64, nq, n)
+    eigvals = zeros(ComplexF64, nq, n)
     for (i, v) in enumerate(pack[2].data[2])
-        rpa_val[i, :] =  v
-    end  
-    values = reim ==:real ? real.(rpa_val) : imag.(rpa_val)
+        eigvals[i, :] = v
+    end
+    values = reim==:real ? real.(eigvals) : imag.(eigvals)
     xlabel := "q"
     ylabel := "ω"
     minorgrid --> true
     showaxis --> :yes
-
     @series begin
         seriestype := :path
         pack[2].data[1], values
-    end  
+    end
     @series begin
         seriestype := :scatter
         pack[2].data[1], values
-    end 
+    end
 end
-"""
-    @recipe plot(rz::ReciprocalZone, path::Union{ReciprocalPath,Nothing}=nothing)
 
-Define the recipe for the visualization of a reciprocal zone and a reciprocal path
-"""
-@recipe function plot(rz::ReciprocalZone, path::Union{ReciprocalPath,Nothing}=nothing)
-    title := "ReciprocalZone"
-    titlefontsize --> 10
-    legend := false
-    aspect_ratio := :equal
-    @series begin
-        seriestype := :scatter
-        coordinates = NTuple{length(eltype(rz)), eltype(eltype(rz))}[]
-        for i in rz
-            push!(coordinates, Tuple(i))
-        end
-        coordinates
-    end
-    if !(isnothing(path))
-        coordinates = NTuple{length(eltype(path)), eltype(eltype(path))}[]
-        for i in path
-            push!(coordinates, Tuple(i))
-        end  
-        @series begin
-            seriestype := :scatter
-            coordinates
-        end
-        @series begin
-            coordinates
-        end
-    end
-end
-# select a path from the ReciprocalZone
-using QuantumLattices: atol, rtol, isonline
-using Base.Iterators: product
-using LinearAlgebra: norm
-"""
-    selectpath(stsp::Tuple{<:AbstractVector, <:AbstractVector}, rz::ReciprocalZone; ends::Tuple{Bool, Bool}=(true, false), atol::Real=atol, rtol::Real=rtol) -> Tuple(Vector{Vector{Float64}}, Vector{Int})
-
-Select a path from the reciprocal zone.
-"""
-function selectpath(stsp::Tuple{<:AbstractVector, <:AbstractVector}, rz::ReciprocalZone; ends::Tuple{Bool, Bool}=(true, false), atol::Real=atol, rtol::Real=rtol) 
-    start, stop = stsp[1], stsp[2]
-    dimₖ = length(rz[1])
-    dim₁ = length(rz.reciprocals)
-    @assert dimₖ == dim₁ "selectpath error: the dimension of k point does not match with the the number of reciprocals"
-    recpr = zeros(Float64, dimₖ, dim₁)
-    for i in 1:dim₁
-        recpr[:, i] = rz.reciprocals[i]
-    end
-    startrp = recpr\(start - rz[1]) 
-    stoprp = recpr\(stop - rz[1]) 
-    intstart = floor.(Int, round.(startrp; digits=4))
-    intstop = floor.(Int, round.(stoprp; digits=4))
-    mes = []
-    for i in 1:dimₖ
-        if intstop[i] >= intstart[i]
-            step = 1
-        elseif intstop[i] < intstart[i]
-            step = -1
-        end
-        push!(mes, intstart[i]:step:intstop[i])
-    end
-    disps = [recpr*[disp...] for disp in product(mes...)]
-    psegments = Vector{Float64}[]
-    isegments, dsegments = Int[], []
-    for (pos, k) in enumerate(rz)
-        for disp in disps
-            rcoord = k + disp
-            if isonline(rcoord, start, stop; ends=ends, atol=atol, rtol=rtol)
-                push!(psegments, rcoord)
-                push!(isegments, pos)
-                push!(dsegments, norm(rcoord-start))
-            end
-        end
-    end
-    p = sortperm(dsegments)
-    return psegments[p], isegments[p]
-end
-"""
-    selectpath(path::AbstractVector{<:Tuple{<:AbstractVector, <:AbstractVector}}, bz::ReciprocalZone;ends::Union{<:AbstractVector{Bool},Nothing}=nothing, atol::Real=atol, rtol::Real=rtol) -> Tuple(Vector{Vector{Float64}}, Vector{Int})  -> -> Tuple(ReciprocalPath, Vector{Int})
-
-Select a path from the reciprocal zone. Return ReciprocalPath and positions of points in the reciprocal zone.
-"""
-function selectpath(path::AbstractVector{<:Tuple{<:AbstractVector, <:AbstractVector}}, bz::ReciprocalZone;ends::Union{<:AbstractVector{Bool},Nothing}=nothing, atol::Real=atol, rtol::Real=rtol)
-    points = Vector{Float64}[]
-    positions = Int[]
-    endss = isnothing(ends) ? [false for _ in 1:length(path)] : ends 
-    @assert length(path) == length(endss) "selectpath error: the number of ends is not equal to that of path."
-    for (i,stsp) in enumerate(path)
-        psegments, isegments = selectpath(stsp, bz; ends=(true, endss[i]), atol=atol, rtol=rtol)
-        if i>1 && length(isegments)>0 && length(positions)>0 && positions[end] == isegments[1]
-            popfirst!(psegments) 
-            popfirst!(isegments) 
-        end
-            append!(points, psegments)
-            append!(positions, isegments)
-    end
-    return ReciprocalPath(points), positions
-end
 end # module
-
