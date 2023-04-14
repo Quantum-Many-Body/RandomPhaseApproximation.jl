@@ -1,5 +1,5 @@
 using LinearAlgebra: dot
-using Plots: plot, plot!, savefig
+using Plots: plot, savefig
 using QuantumLattices: Algorithm, BrillouinZone, CompositeIndex, Coulomb, Fock, FID, Hilbert, Hopping, Hubbard, Index, InterOrbitalInterSpin, InterOrbitalIntraSpin, Lattice, MatrixCoupling, OperatorGenerator, OperatorUnitToTuple, Onsite, PairHopping, Parameters, ReciprocalZone, SpinFlip, Table
 using QuantumLattices: bonds, expand, icoordinate, reciprocals, selectpath, update!, @σ_str
 using RandomPhaseApproximation
@@ -84,9 +84,9 @@ end
     @test isapprox(result[2].data[2][1][length(result[2].data[2][1])÷2+1], 0.001684994305; atol=1e-9)
     savefig(plot(result), "eigen.png")
 
-    # χ₂ = chiq(result[2].data[2], result[2].data[3], result[2].data[3], energies; η=0.02)
+    # χ₂ = chiq(result[2].data[2], result[2].data[3], result[2].data[4], energies; η=0.02)
     # @test findmax(abs, χ₂-χ₁)[1] < 1e-9
-    # χ₃ = chiq(result[2].data[2], result[2].data[3], result[2].data[3], energies; η=0.02, imag_only=true)
+    # χ₃ = chiq(result[2].data[2], result[2].data[3], result[2].data[4], energies; η=0.02, imag_only=true)
     # @test findmax(abs, χ₃-χ₁)[1] < 1e-9
 end
 

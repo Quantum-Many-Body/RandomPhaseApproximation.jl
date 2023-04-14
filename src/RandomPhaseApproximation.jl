@@ -730,39 +730,41 @@ function _chikq03(tba::AbstractTBA, k::AbstractVector, q::AbstractVector, omega:
     return ee, uu, vcat(one1, one2)
 end
 
-"""
-    chiq(eigvals::Vector{<:Vector{<:Number}}, eigvecs::Vector{<:Matrix{<:Number}}, o2bs::Vector{<:Matrix{<:Number}}, energies::AbstractVector; η::Float64=1e-2, imag_only::Bool=false) -> Array{ComplexF64, 4}
+# """
+#     chiq(eigvals::Vector{<:Vector{<:Number}}, eigvecs::Vector{<:Matrix{<:Number}}, o2bs::Vector{<:Matrix{<:Number}}, energies::AbstractVector; η::Float64=1e-2, imag_only::Bool=false) -> Array{ComplexF64, 4}
 
-Get the ``\\chi_{ij, nm}(\\omega, q)``. When `imag_only` is true, only the imaginary part is calculated.
+# Get the ``\\chi_{ij, nm}(\\omega, q)``. When `imag_only` is true, only the imaginary part is calculated.
 
-Here, the eigenvalues, eigenvectors, and the orbital-to-band unitary matrices should be obtained by the method `eigenrpa`.
-"""
-function chiq(eigvals::Vector{<:Vector{<:Number}}, eigvecs::Vector{<:Matrix{<:Number}}, o2bs::Vector{<:Matrix{<:Number}}, energies::AbstractVector; η::Float64=1e-2, imag_only::Bool=false)
-    nq = length(eigvals)
-    nw = length(energies)
-    ndim = size(o2bs[1], 1)
-    chi = zeros(ComplexF64, ndim, ndim, nw, nq)
-    if imag_only
-        for iq = 1:nq
-            for iw = 1:nw
-                for i = 1:length(eigvals[iq])
-                    temp = o2bs[iq] * eigvecs[iq][:, i]
-                    chi[:, :, iw, iq] += temp * η / ((energies[iw]-eigvals[iq][i])^2+η^2) * adjoint(temp)
-                end
-            end
-        end
-    else
-        n = size(o2bs[1], 2)
-        for iq = 1:nq
-            for iw = 1:nw
-                tm = eigvecs[iq]
-                tmu = o2bs[iq]*tm
-                chi[:, :, iw, iq] = tmu * diagm([1/(-energies[iw]-im*η+eigvals[iq][i]) for i=1:n]) * (diagm(sign.(eigvals[iq]))) * adjoint(tmu)
-            end
-        end
-    end
-    return chi
-end
+# Here, the eigenvalues, eigenvectors, and the orbital-to-band unitary matrices should be obtained by the method `eigenrpa`.
+# """
+# function chiq(eigvals::Vector{<:Vector{<:Number}}, eigvecs::Vector{<:Matrix{<:Number}}, o2bs::Vector{<:Matrix{<:Number}}, energies::AbstractVector; η::Float64=1e-2, imag_only::Bool=false)
+#     nq = length(eigvals)
+#     nw = length(energies)
+#     ndim = size(o2bs[1], 1)
+#     chi = zeros(ComplexF64, ndim, ndim, nw, nq)
+#     if imag_only
+#         for iq = 1:nq
+#             for i = 1:length(eigvals[iq])
+#                 temp = o2bs[iq] * eigvecs[iq][:, i]
+#                 temp′ = adjoint(temp)
+#                 for iw = 1:nw
+#                     chi[:, :, iw, iq] += temp * η / ((energies[iw]-eigvals[iq][i])^2+η^2) * temp′
+#                 end
+#             end
+#         end
+#     else
+#         n = size(o2bs[1], 2)
+#         for iq = 1:nq
+#             tmu = o2bs[iq] * eigvecs[iq]
+#             tmu′ = adjoint(tmu)
+#             diag = diagm(sign.(eigvals[iq]))
+#             for iw = 1:nw
+#                 chi[:, :, iw, iq] = tmu * diagm([1/(-energies[iw]-im*η+eigvals[iq][i]) for i=1:n]) * diag * tmu′
+#             end
+#         end
+#     end
+#     return chi
+# end
 
 """
     @recipe plot(pack::Tuple{Algorithm{<:RPA}, Assignment{<:EigenRPA}})
