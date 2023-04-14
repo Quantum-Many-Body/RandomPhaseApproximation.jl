@@ -8,7 +8,7 @@ Spin excitations of π-flux + AFM + Hubbard model on square lattice by random ph
 
 ## Spectra of spin excitations
 
-The following codes could compute the spin excitation spectral within random phase approximation.
+The following codes could compute the spin excitation spectra within random phase approximation.
 
 First, construct the RPA frontend:
 ```@example piflux
@@ -44,7 +44,7 @@ rpa = Algorithm(:PiFluxAFM, RPA(lattice, hilbert, (t, m₀), (U,); neighbors=1))
 nothing # hide
 ```
 
-Now, show the first Brillouin zone and the high-symmetry path in the reciprocal space:
+Then, calculate the spin excitation spectra:
 ```@example piflux
 # define the first Brillouin zone and the high-symmetry path in the reciprocal space
 nk = 12
@@ -53,22 +53,11 @@ path, = selectpath(
     brillouinzone, (0, 0)=>(1, 0), (1, 0)=>(0, 1);
     ends=((true, false), (true, true))
 )
-plt = plot()
-plot!(plt, brillouinzone)
-plot!(plt, path)
-```
 
-Then, calculate the spin excitation spectra:
-
-```@example piflux
 # define the particle-hole channel operators
-mx = MatrixCoupling(:, FID, :, σ"x", :)
-my = MatrixCoupling(:, FID, :, σ"y", :)
-mz = MatrixCoupling(:, FID, :, σ"z", :)
-
-s⁺ = expand(Onsite(:sx, Complex(1.0), 0.5*mx+0.5im*my), bonds(lattice, 0), hilbert)
-s⁻ = expand(Onsite(:sy, Complex(1.0), 0.5*mx-0.5im*my), bonds(lattice, 0), hilbert)
-sz = expand(Onsite(:sz, Complex(1.0), 0.5*mz), bonds(lattice, 0), hilbert)
+s⁺ = expand(Onsite(:s⁺, 1.0, MatrixCoupling(:, FID, :, σ"+", :)), bonds(lattice, 0), hilbert)
+s⁻ = expand(Onsite(:s⁻, 1.0, MatrixCoupling(:, FID, :, σ"-", :)), bonds(lattice, 0), hilbert)
+sᶻ = expand(Onsite(:sᶻ, 0.5, MatrixCoupling(:, FID, :, σ"z", :)), bonds(lattice, 0), hilbert)
 
 # define and compute the transverse spin-spin susceptibility
 χ⁺⁻ = rpa(
@@ -84,7 +73,7 @@ sz = expand(Onsite(:sz, Complex(1.0), 0.5*mz), bonds(lattice, 0), hilbert)
     )
 )
 
-# plot the spectral of transverse spin excitations, i.e. Im[χ⁺⁻(q, ω)]/π
+# plot the spectra of transverse spin excitations, i.e. Im[χ⁺⁻(q, ω)]/π
 plot(
     χ⁺⁻,
     xticks=(
@@ -103,13 +92,13 @@ plot(
         path,
         brillouinzone,
         range(0.0, 4.0, length=200),
-        ([sz], [sz]);
+        ([sᶻ], [sᶻ]);
         η=0.02,
         findk=true
     )
 )
 
-# plot the spectral of longitudinal spin excitations, i.e. Im[χᶻᶻ(q, ω)]/π
+# plot the spectra of longitudinal spin excitations, i.e. Im[χᶻᶻ(q, ω)]/π
 plot(
     χᶻᶻ;
     xticks=(

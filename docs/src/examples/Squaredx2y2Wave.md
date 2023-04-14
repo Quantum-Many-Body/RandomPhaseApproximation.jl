@@ -8,7 +8,7 @@ Spin excitations of t + Δ + Hubbard model on square lattice by random phase app
 
 ## Spectra of spin excitations
 
-The following codes could compute the spin excitation spectral within random phase approximation.
+The following codes could compute the spin excitation spectra within random phase approximation.
 
 First, construct the RPA frontend:
 ```@example BdG
@@ -58,11 +58,8 @@ plot(
 )
 ```
 
-The transverse spin excitation spectral can be computed:
+The transverse spin excitation spectra can be computed:
 ```@example BdG
-mx = MatrixCoupling(:, FID, :, σ"x", :)
-my = MatrixCoupling(:, FID, :, σ"y", :)
-
 nk=16
 brillouinzone = BrillouinZone(reciprocals(lattice), nk)
 path, = selectpath(
@@ -73,8 +70,8 @@ path, = selectpath(
     ends=((true, false), (true, false), (true, true))
 )
 
-s⁺ = expand(Onsite(:sx, Complex(1.0), 0.5*mx+0.5im*my), bonds(lattice, 0), hilbert)
-s⁻ = expand(Onsite(:sy, Complex(1.0), 0.5*mx-0.5im*my), bonds(lattice, 0), hilbert)
+s⁺ = expand(Onsite(:s⁺, 1.0, MatrixCoupling(:, FID, :, σ"+", :)), bonds(lattice, 0), hilbert)
+s⁻ = expand(Onsite(:s⁻, 1.0, MatrixCoupling(:, FID, :, σ"-", :)), bonds(lattice, 0), hilbert)
 
 transverse = ParticleHoleSusceptibility(
     path,
@@ -102,7 +99,6 @@ Another way to define the tight-binding model:
 import QuantumLattices: dimension
 using TightBindingApproximation: TBA
 
-table = Table(hilbert, OperatorUnitToTuple(:site, :orbital, :spin))
 function hamiltonian(t::Float64, Δ::Float64; k=nothing, kwargs...) 
     @assert !isnothing(k) "hamiltonian error"
     ek = 2t * (cos(k[1])+cos(k[2]))
@@ -117,7 +113,7 @@ end
 
 parameters = Parameters{(:t, :Δ)}(0.4, 0.4*0.299)
 tba = TBA{Fermionic{:BdG}}(lattice, hamiltonian, parameters)
-rpa = Algorithm(:dx²y², RPA(tba, hilbert, table, (U,); neighbors=1))
+rpa = Algorithm(:dx²y², RPA(tba, hilbert, (U,); neighbors=1))
 χ⁺⁻ = rpa(:χ⁺⁻, transverse)
 plot(
     χ⁺⁻,

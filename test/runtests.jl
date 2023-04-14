@@ -1,4 +1,3 @@
-using RandomPhaseApproximation
 using Test
 
 @testset "RandomPhaseApproximation.jl" begin

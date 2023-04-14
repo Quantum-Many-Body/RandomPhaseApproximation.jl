@@ -1,9 +1,9 @@
 module RandomPhaseApproximation
 
 using Distributed: @distributed
-using LinearAlgebra: I, Hermitian, NoPivot, cholesky, diagm, dot, eigen
-using QuantumLattices: plain, bonds, dimension, expand, iscreation, kind, rank
-using QuantumLattices: AbstractLattice, Action, Algorithm, AnalyticalExpression, Assignment, BrillouinZone, CompositeIndex, Frontend, Hilbert, MatrixRepresentation, Neighbors, Operator, OperatorGenerator, Operators, OperatorUnitToTuple, RepresentationGenerator, ReciprocalSpace, Table, Term
+using LinearAlgebra: I, Hermitian, NoPivot, cholesky, diagm, dot, eigen, norm
+using QuantumLattices: AbstractLattice, Action, Algorithm, AnalyticalExpression, Assignment, BrillouinZone, CompositeIndex, Frontend, Hilbert, MatrixRepresentation, Neighbors, Operator, OperatorGenerator, Operators, OperatorUnitToTuple, RepresentationGenerator, ReciprocalSpace, ReciprocalZone, Table, Term
+using QuantumLattices: plain, bonds, decimaltostr, dimension, expand, iscreation, kind, rank
 using RecipesBase: RecipesBase, @recipe, @series
 using Serialization: serialize
 using SharedArrays: SharedArray
@@ -11,7 +11,7 @@ using TightBindingApproximation: AbstractTBA, Fermionic, TBA, TBAKind
 
 import QuantumLattices: Parameters, add!, initialize, matrix, run!, update!
 
-export EigenRPA, ParticleHoleSusceptibility, PHVertexMatrix, RPA, chiq, chiq0, chiq0chiq, correlation, eigenrpa
+export EigenRPA, ParticleHoleSusceptibility, PHVertexMatrix, RPA, chiq, chiq0, chiq0chiq, correlation, eigenrpa, vertex
 
 """
     isevenperm(p::Vector) -> Bool
@@ -43,6 +43,32 @@ end
 Judge whether two composite indices are on site same site.
 """
 @inline issamesite(op₁::CompositeIndex, op₂::CompositeIndex) = (op₁.index.site==op₂.index.site && op₁.icoordinate==op₂.icoordinate)
+
+"""
+    fermifunc(e::Real, temperature::Real=1e-12, μ::Real=0.0) -> Float64
+ 
+Fermi distribution function. Boltzmann constant ``k_B=1``.
+"""
+function fermifunc(e::Real, temperature::Real=1e-12, μ::Real=0.0)
+    if temperature > 1e-10
+        f = (e-μ) / temperature
+        if f > 20
+            f = 0.0
+        elseif f < -20
+            f = 1.0
+        else
+            f = 1.0 / (1+exp(f))
+        end
+    else
+        f = e - μ
+        if f > 0.0
+            f = 0.0
+        else
+            f = 1.0
+        end
+    end
+    return f
+end
 
 """
     PHVertexMatrix{D<:Number, Vq, Vk, T} <: MatrixRepresentation
@@ -159,7 +185,7 @@ end
 """
     RPA(tba::AbstractTBA, interactions::Tuple{Vararg{Term}}; neighbors::Union{Nothing, Int, Neighbors}=nothing)
     RPA(lattice::AbstractLattice, hilbert::Hilbert, terms::Tuple{Vararg{Term}}, interactions::Tuple{Vararg{Term}}; neighbors::Union{Nothing, Int, Neighbors}=nothing)
-    RPA(tba::AbstractTBA{K, <:AnalyticalExpression}, hilbert::Hilbert, table::Table, interactions::Tuple{Vararg{Term}}; neighbors::Union{Nothing, Int, Neighbors}=nothing) where {K<:TBAKind}
+    RPA(tba::AbstractTBA{K, <:AnalyticalExpression}, hilbert::Hilbert, interactions::Tuple{Vararg{Term}}; neighbors::Union{Nothing, Int, Neighbors}=nothing) where {K<:TBAKind}
 
 Construct an `RPA` type.
 """
@@ -173,8 +199,9 @@ end
 @inline function RPA(lattice::AbstractLattice, hilbert::Hilbert, terms::Tuple{Vararg{Term}}, interactions::Tuple{Vararg{Term}}; neighbors::Union{Nothing, Int, Neighbors}=nothing)
     return RPA(TBA(lattice, hilbert, terms; neighbors=neighbors), interactions)
 end
-function RPA(tba::AbstractTBA{K, <:AnalyticalExpression}, hilbert::Hilbert, table::Table, interactions::Tuple{Vararg{Term}}; neighbors::Union{Nothing, Int, Neighbors}=nothing) where {K<:TBAKind}
+function RPA(tba::AbstractTBA{K, <:AnalyticalExpression}, hilbert::Hilbert, interactions::Tuple{Vararg{Term}}; neighbors::Union{Nothing, Int, Neighbors}=nothing) where {K<:TBAKind}
     K<:Fermionic{:BdG} && @warn "the table of tba should be (:nambu, *, *, *) where * denotes other degrees of freedom."
+    table = Table(hilbert, OperatorUnitToTuple(:site, :orbital, :spin))
     isnothing(neighbors) && (neighbors = maximum(term->term.bondkind, interactions))
     int = OperatorGenerator(interactions, bonds(tba.lattice, neighbors), hilbert; table=table)
     return RPA(tba, int)
@@ -191,21 +218,19 @@ Get matrix of particle-hole channel of interaction.
     error("matrix error: wrong field.")
 end
 
-# """
-#     vertex_ph(rpa::RPA, reciprocalspace::AbstractVector{<:AbstractVector}, gauge=:icoordinate) -> Array{ComplexF64, 3}
+"""
+    vertex(rpa::RPA, reciprocalspace::AbstractVector{<:AbstractVector}, gauge=:icoordinate) -> Array{<:Number, 3}
 
-# Return particle-hole vertex induced by the direct channel of interaction (except the Hubbard interaction which include both direct and exchange channels).
-# """
-# @inline function vertex_ph(rpa::RPA, reciprocalspace::AbstractVector{<:AbstractVector}, gauge=:icoordinate; kwargs...)
-#     update!(rpa.interactions; kwargs...)
-#     ops = expand(rpa.interactions)
-#     n, nq = length(rpa.interactions.table), length(reciprocalspace)
-#     result = zeros(promote_type(Complex{Int}, valtype(eltype(rpa.interactions))), n^2, n^2, nq)
-#     for (i, q) in enumerate(reciprocalspace)
-#         result[:, :, i] = PHVertexMatrix{valtype(eltype(rpa.interactions))}(q, rpa.interactions.table, gauge)(ops)
-#     end
-#     return result
-# end
+Return particle-hole vertex induced by the direct channel of interaction (except the Hubbard interaction which include both direct and exchange channels).
+"""
+@inline function vertex(rpa::RPA, reciprocalspace::AbstractVector{<:AbstractVector}, gauge=:icoordinate)
+    n, nq = length(rpa.interactions.table), length(reciprocalspace)
+    result = zeros(promote_type(Complex{Int}, valtype(eltype(rpa.interactions))), n^2, n^2, nq)
+    for (i, q) in enumerate(reciprocalspace)
+        result[:, :, i] = matrix(rpa, :int; k=q, gauge=gauge)
+    end
+    return result
+end
 
 """
     ParticleHoleSusceptibility{P<:ReciprocalSpace, B<:BrillouinZone, E<:AbstractVector, S<:Operators} <: Action
@@ -244,24 +269,19 @@ end
     return (x, y, z, z₀)
 end
 function run!(rpa::Algorithm{<:RPA}, phs::Assignment{<:ParticleHoleSusceptibility})
-    int, tba = rpa.frontend.interactions, rpa.frontend.tba
-    n, nq = length(int.table), length(phs.action.reciprocalspace)
-    vph = zeros(ComplexF64, n^2, n^2, nq)
     gauge = get(phs.action.options, :gauge, :icoordinate)
-    for (i, q) in enumerate(phs.action.reciprocalspace)
-        vph[:, :, i] = matrix(rpa.frontend, :int; k=q, gauge=gauge)
-    end
     η = get(phs.action.options, :η, 0.01)
     temperature = get(phs.action.options, :temperature, 1e-12)
     μ = get(phs.action.options, :μ, 0.0)
-    scflag = kind(tba) == Fermionic(:BdG) ? true : false
+    scflag = kind(rpa.frontend.tba)==Fermionic(:BdG) ? true : false
     findk = get(phs.action.options, :findk, false)
+    vph = vertex(rpa.frontend, phs.action.reciprocalspace, gauge)
     if findk
-        ndim, nk = dimension(tba), length(phs.action.brillouinzone)
+        ndim, nk = dimension(rpa.frontend.tba), length(phs.action.brillouinzone)
         eigvecs = zeros(ComplexF64, ndim, ndim, nk)
         eigvals = zeros(Float64, ndim, nk)
         for (i, k) in enumerate(phs.action.brillouinzone)
-            eigensystem = eigen(matrix(tba; k=k, gauge=:icoordinate))
+            eigensystem = eigen(matrix(rpa.frontend.tba; k=k, gauge=:icoordinate))
             eigvals[:, i] = eigensystem.values
             eigvecs[:, :, i] = eigensystem.vectors
         end
@@ -270,16 +290,16 @@ function run!(rpa::Algorithm{<:RPA}, phs::Assignment{<:ParticleHoleSusceptibilit
         ecut = get(phs.action.options, :cut_off, Inf)
         if ecut < Inf
             @warn "This mode (cut off energy) is the experimental method."
-            brillouinzone = _kpoint_cutoff(phs.action.brillouinzone, ecut, μ, tba)
-            χ₀, χ = chiq0chiq(tba, brillouinzone, phs.action.reciprocalspace, vph, phs.action.energies; η=η, temperature=temperature, μ=μ, scflag=scflag, gauge=gauge, phs.action.options...)
+            brillouinzone = _kpoint_cutoff(phs.action.brillouinzone, ecut, μ, rpa.frontend.tba)
+            χ₀, χ = chiq0chiq(rpa.frontend.tba, brillouinzone, phs.action.reciprocalspace, vph, phs.action.energies; η=η, temperature=temperature, μ=μ, scflag=scflag, gauge=gauge, phs.action.options...)
         else
-            χ₀, χ = chiq0chiq(tba, phs.action.brillouinzone, phs.action.reciprocalspace, vph, phs.action.energies; η=η, temperature=temperature, μ=μ, scflag=scflag, gauge=gauge, phs.action.options...)
+            χ₀, χ = chiq0chiq(rpa.frontend.tba, phs.action.brillouinzone, phs.action.reciprocalspace, vph, phs.action.energies; η=η, temperature=temperature, μ=μ, scflag=scflag, gauge=gauge, phs.action.options...)
         end
     end
     get(phs.action.options, :save, false) && (serialize(join([get(phs.action.options, :filename, "chi"), "0"]), χ₀))
     gauge = findk ? :rcoordinate : gauge==:rcoordinate ? :icoordinate : :rcoordinate
-    phs.data[3][:, :] = correlation(χ, phs.action.reciprocalspace, phs.action.operators, int.table; gauge=gauge)
-    phs.data[4][:, :] = correlation(χ₀, phs.action.reciprocalspace, phs.action.operators, int.table; gauge=gauge)
+    phs.data[3][:, :] = correlation(χ, phs.action.reciprocalspace, phs.action.operators, rpa.frontend.interactions.table; gauge=gauge)
+    phs.data[4][:, :] = correlation(χ₀, phs.action.reciprocalspace, phs.action.operators, rpa.frontend.interactions.table; gauge=gauge)
 end
 function _kpoint_cutoff(brillouinzone::BrillouinZone, ecut::Float64, μ::Float64, tba::AbstractTBA)
     result = eltype(brillouinzone)[]
@@ -334,39 +354,13 @@ function matrix!(m::Matrix{<:Number}, operators::Operators, table::Table, k; gau
     return m
 end
 
-"""
-    fermifunc(e::Real, temperature::Real=1e-12, μ::Real=0.0) -> Float64
- 
-Fermi distribution function. Boltzmann constant ``k_B=1``.
-"""
-function fermifunc(e::Real, temperature::Real=1e-12, μ::Real=0.0)
-    if temperature > 1e-10
-        f = (e-μ) / temperature
-        if f > 20
-            f = 0.0
-        elseif f < -20
-            f = 1.0
-        else
-            f = 1.0 / (1+exp(f))
-        end
-    else
-        f = e - μ
-        if f > 0.0
-            f = 0.0
-        else
-            f = 1.0
-        end
-    end
-    return f
-end
-
 # Return ``chi^0(k, q)_{ij, mn}=chi^0(k, q)_{-+,+-}``, where ``chi^0(k, q)_{12, 34} ≡ <c^\\dagger_{k, 2}c_{k-q, 1}c^\\dagger_{k-q, 3}c_{k, 4}>``.
 @inline function _chikq0(tba::AbstractTBA, k::AbstractVector, q::AbstractVector, omega::Float64; scflag::Bool, η::Float64=0.01, temperature::Float64=1e-12, μ::Float64=0.0, kwargs...)
     Ek, uk = eigen(Hermitian(matrix(tba; k=k, kwargs...)))
     Ekq, ukq = eigen(Hermitian(matrix(tba; k=k-q, kwargs...)))
     return _chikq0(Ek, Ekq, uk, ukq, omega; scflag=scflag, η=η, temperature=temperature, μ=μ)
 end
-function _chikq0(Ek::Vector{Float64}, Ekq::Vector{Float64}, uk::Matrix{ComplexF64}, ukq::Matrix{ComplexF64}, omega::Float64; scflag::Bool, η::Float64=0.01, temperature::Float64=1e-12, μ::Float64=0.0)
+function _chikq0(Ek::Vector{Float64}, Ekq::Vector{Float64}, uk::Matrix{<:Number}, ukq::Matrix{<:Number}, omega::Float64; scflag::Bool, η::Float64=0.01, temperature::Float64=1e-12, μ::Float64=0.0)
     n = length(Ek)
     if scflag
         @assert iseven(n) "_chikq0 error: odd dimension when pairing terms exist."
@@ -536,15 +530,18 @@ end
 @recipe function plot(pack::Tuple{Algorithm{<:RPA}, Assignment{<:ParticleHoleSusceptibility}}, ecut::Float64, dE::Float64=1e-3, mode::Symbol=:χ, reim::Symbol=:re)
     title --> nameof(pack[1], pack[2])
     titlefontsize --> 10
-    legend --> false
     xlabel --> "q₁"
     ylabel --> "q₂"
     aspect_ratio := :equal
+    colorbar_title := string(reim==:re ? "Re" : "Im", mode, "(q, ω=", decimaltostr(ecut), ")")
     @series begin
         seriestype := :heatmap
         data = spectralecut(pack[2], ecut, dE, mode)
-        reim == :re && (data = (data[1], data[2], real.(data[3])))
-        reim == :im && (data = (data[1], data[2], imag.(data[3])/pi))
+        reim==:re && (data = (data[1], data[2], real.(data[3])))
+        reim==:im && (data = (data[1], data[2], imag.(data[3])/pi))
+        clims --> extrema(data[3])
+        xlims --> (minimum(data[1]), maximum(data[1]))
+        ylims --> (minimum(data[2]), maximum(data[2]))
         data[1], data[2], data[3]
     end
 end
@@ -626,9 +623,10 @@ function run!(rpa::Algorithm{<:RPA}, erpa::Assignment{<:EigenRPA})
         end
     else
         for (i, q) in enumerate(erpa.action.reciprocalspace)
+            m = matrix(rpa.frontend, :int; k=q, gauge=gauge)
             for j in 1:nk
                 for l in 1:nk
-                    vph[:, :, j, l, i] = matrix(rpa.frontend, :int; k=q, gauge=gauge)
+                    vph[:, :, j, l, i] = m
                 end
             end
         end
@@ -638,9 +636,9 @@ function run!(rpa::Algorithm{<:RPA}, erpa::Assignment{<:EigenRPA})
     μ = get(erpa.action.options, :μ, 0.0)
     bands = get(erpa.action.options, :bands, nothing)
     eigvals, eigvecs, o2bs = eigenrpa(tba, erpa.action.brillouinzone, erpa.action.reciprocalspace, vph; temperature=temperature, μ=μ, eigvals_only=erpa.action.eigvals_only, η=η, bands=bands, gauge=gauge, erpa.action.options...)
-    push!(erpa.data[2], eigvals...)
-    push!(erpa.data[3], eigvecs...)
-    push!(erpa.data[4], o2bs...)
+    append!(erpa.data[2], eigvals)
+    append!(erpa.data[3], eigvecs)
+    append!(erpa.data[4], o2bs)
 end
 
 """
@@ -680,8 +678,8 @@ function eigenrpa(
         for i = 1:nk
             temp0, tempu, g0 = _chikq03(tba, brillouinzone[i], reciprocalspace[iq], 0.0; temperature=temperature, μ=μ, bands=bands, kwargs...)
             push!(um, tempu)
-            push!(chi0inv, temp0...)
-            push!(g, g0...)
+            append!(chi0inv, temp0)
+            append!(g, g0)
             push!(list, size(tempu, 2))
         end
         list = cumsum(list)
@@ -737,13 +735,13 @@ function _chikq03(tba::AbstractTBA, k::AbstractVector, q::AbstractVector, omega:
 end
 
 """
-    chiq(eigvals::Vector{Vector{<:Number}}, eigvecs::Vector{Matrix{<:Number}}, o2bs::Vector{Matrix{ComplexF64}}, energies::AbstractVector; η::Float64=1e-2, imag_only::Bool=false) -> Array{ComplexF64, 4}
+    chiq(eigvals::Vector{<:Vector{<:Number}}, eigvecs::Vector{<:Matrix{<:Number}}, o2bs::Vector{<:Matrix{<:Number}}, energies::AbstractVector; η::Float64=1e-2, imag_only::Bool=false) -> Array{ComplexF64, 4}
 
 Get the ``\\chi_{ij, nm}(\\omega, q)``. When `imag_only` is true, only the imaginary part is calculated.
 
 Here, the eigenvalues, eigenvectors, and the orbital-to-band unitary matrices should be obtained by the method `eigenrpa`.
 """
-function chiq(eigvals::Vector{Vector{<:Number}}, eigvecs::Vector{Matrix{<:Number}}, o2bs::Vector{Matrix{ComplexF64}}, energies::AbstractVector; η::Float64=1e-2, imag_only::Bool=false)
+function chiq(eigvals::Vector{<:Vector{<:Number}}, eigvecs::Vector{<:Matrix{<:Number}}, o2bs::Vector{<:Matrix{<:Number}}, energies::AbstractVector; η::Float64=1e-2, imag_only::Bool=false)
     nq = length(eigvals)
     nw = length(energies)
     ndim = size(o2bs[1], 1)
