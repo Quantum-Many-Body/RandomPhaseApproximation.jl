@@ -550,11 +550,7 @@ function spectralecut(ass::Assignment{<:ParticleHoleSusceptibility}, ecut::Float
     energies = ass.data[2]
     f(x) = abs(x-ecut) <= dE ? true : false
     idx = findall(f, energies)
-    if mode == :χ
-        intensity = ass.data[3]
-    elseif mode == :χ0
-        intensity = ass.data[4]
-    end
+    intensity = mode==:χ ? ass.data[3] : ass.data[4]
     dims = Int[]
     seg = []
     reciprocals = []
