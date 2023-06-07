@@ -62,7 +62,7 @@ end
     s⁻ = expand(Onsite(:s⁻, 1.0, MatrixCoupling(:, FID, :, σ"-", :)), bonds(lattice, 0), hilbert)
 
     brillouinzone = BrillouinZone{:k}(reciprocals(lattice), 6)
-    path = selectpath(brillouinzone, (0, 0)=>(1, 0), (1, 0)=>(-1, 1); ends=((true, false), (true, true)))[1]
+    path = selectpath(brillouinzone, (0, 0)=>(1, 0), (1, 0)=>(-1, 1))[1]
     energies = range(0.0, 1.20, length=201)
 
     result₀ = rpa(:AFM₀, ParticleHoleSusceptibility(path, brillouinzone, energies, ([s⁺], [s⁻]); η=0.02, gauge=:rcoordinate, save=false))
@@ -111,7 +111,7 @@ end
     reciprocalzone = ReciprocalZone(reciprocals(lattice), -1=>1, -1=>1; length=33, ends=(true, true))
     s⁺ = expand(Onsite(:s⁺, 1.0, MatrixCoupling(:, FID, :, σ"+", :)), bonds(lattice, 0), hilbert)
     s⁻ = expand(Onsite(:s⁻, 1.0, MatrixCoupling(:, FID, :, σ"-", :)), bonds(lattice, 0), hilbert)
-    result = rpa(:χ⁺⁻, ParticleHoleSusceptibility(reciprocalzone, brillouinzone, range(0.0, 0.0, length=1), ([s⁺], [s⁻]); η=0.02,findk=true, save=false))
+    result = rpa(:χ⁺⁻, ParticleHoleSusceptibility(reciprocalzone, brillouinzone, range(0.0, 0.0, length=1), ([s⁺], [s⁻]); η=0.02, findk=true, save=false))
     savefig(plot(result, 0.0, 1e-3, :χ, :re), "dx²y²-re.png")
     savefig(plot(result, 0.0, 1e-3, :χ, :im), "dx²y²-im.png")
 end
