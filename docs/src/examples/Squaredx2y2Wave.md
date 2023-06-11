@@ -42,65 +42,33 @@ The electronic energy bands can be shown as follows:
 ```@example BdG
 # plot electronic energy bands
 path = ReciprocalPath(
-    reciprocals(lattice),
-    (0//2, 0//2)=>(1//2, 0//2),
-    (1//2, 0//2)=>(1//2, 1//2),
-    (1//2, 1//2)=>(0, 0);
+    reciprocals(lattice), (0.0, 0.0), (0.5, 0.0), (0.5, 0.5), (0.0, 0.0);
     length=50
 )
-ebs = Algorithm(:dx²y², rpa.frontend.tba)(:EB, EnergyBands(path, gauge=:rcoordinate))
-plot(
-    ebs,
-    xticks=(
-        [0, 50, 100, 150],
-        ["(0, 0)", "(π, 0)", "(π, π)", "(0, 0)"]
-    )
-)
+plot(Algorithm(:dx²y², rpa.frontend.tba)(:EB, EnergyBands(path; gauge=:rcoordinate)))
 ```
 
 The transverse spin excitation spectra can be computed:
 ```@example BdG
 nk=16
 brillouinzone = BrillouinZone(reciprocals(lattice), nk)
-path, = selectpath(
-    brillouinzone,
-    (0, 0)=>(0, 1//2),
-    (0, 1//2)=>(1//2, 1//2),
-    (1//2, 1//2)=>(0, 0);
-    ends=((true, false), (true, false), (true, true))
-)
+path = selectpath(brillouinzone, (0.0, 0.0), (0.0, 0.5), (0.5, 0.5), (0.0, 0.0))[1]
 
 s⁺ = expand(Onsite(:s⁺, 1.0, MatrixCoupling(:, FID, :, σ"+", :)), bonds(lattice, 0), hilbert)
 s⁻ = expand(Onsite(:s⁻, 1.0, MatrixCoupling(:, FID, :, σ"-", :)), bonds(lattice, 0), hilbert)
 
 transverse = ParticleHoleSusceptibility(
-    path,
-    brillouinzone,
-    range(0.0, 4.0, length=400),
-    ([s⁺], [s⁻]);
-    η=0.02,
-    save=false,
-    findk=true
+    path, brillouinzone, range(0.0, 4.0, length=400), ([s⁺], [s⁻]);
+    η=0.02, save=false, findk=true
 )
-χ⁺⁻ = rpa(:χ⁺⁻, transverse)
-
-plot(
-    χ⁺⁻,
-    xticks=(
-        [0, 16/2, 32/2, 48/2, 64/2+1],
-        ["(0, 0)", "(π, 0)", "(π, π)", "(0, 0)"]
-    ),
-    clims=(0, 0.5)
-)
+plot(rpa(:χ⁺⁻, transverse), clims=(0, 0.5))
 ```
 
 Another way to define the tight-binding model:
 ```@example BdG
-import QuantumLattices: dimension
 using TightBindingApproximation: TBA
 
-function hamiltonian(t::Float64, Δ::Float64; k=nothing, kwargs...) 
-    @assert !isnothing(k) "hamiltonian error"
+function hamiltonian(t::Float64, Δ::Float64; k=[0, 0], kwargs...)
     ek = 2t * (cos(k[1])+cos(k[2]))
     dk = 2Δ * (cos(k[1])-cos(k[2]))
     return [ek  0   0   dk;
@@ -109,18 +77,9 @@ function hamiltonian(t::Float64, Δ::Float64; k=nothing, kwargs...)
             dk  0   0   -ek
     ]
 end
-@inline dimension(::typeof(hamiltonian)) = 4
 
 parameters = Parameters{(:t, :Δ)}(0.4, 0.4*0.299)
 tba = TBA{Fermionic{:BdG}}(lattice, hamiltonian, parameters)
-rpa = Algorithm(:dx²y², RPA(tba, hilbert, (U,); neighbors=1))
-χ⁺⁻ = rpa(:χ⁺⁻, transverse)
-plot(
-    χ⁺⁻,
-    xticks=(
-        [0, 16/2, 32/2, 48/2, 64/2+1],
-        ["(0, 0)", "(π, 0)", "(π, π)", "(0, 0)"]
-    ),
-    clims=(0, 0.5)
-)
+rpa = Algorithm(:dx²y², RPA(tba, hilbert, U; neighbors=1))
+plot(rpa(:χ⁺⁻, transverse), clims=(0, 0.5))
 ```

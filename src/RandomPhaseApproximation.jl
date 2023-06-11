@@ -3,7 +3,7 @@ module RandomPhaseApproximation
 using Distributed: @distributed
 using LinearAlgebra: I, Hermitian, NoPivot, cholesky, diagm, dot, eigen, norm
 using QuantumLattices: AbstractLattice, Action, Algorithm, AnalyticalExpression, Assignment, BrillouinZone, CompositeIndex, Frontend, Hilbert, MatrixRepresentation, Neighbors, Operator, OperatorGenerator, Operators, OperatorUnitToTuple, RepresentationGenerator, ReciprocalSpace, ReciprocalZone, Table, Term
-using QuantumLattices: plain, bonds, decimaltostr, dimension, expand, iscreation, kind, rank
+using QuantumLattices: plain, bonds, decimaltostr, dimension, expand, iscreation, kind, rank, shape
 using RecipesBase: RecipesBase, @recipe, @series
 using Serialization: serialize
 using SharedArrays: SharedArray
@@ -183,12 +183,15 @@ end
 end
 
 """
+    RPA(tba::AbstractTBA, interactions::Term...; neighbors::Union{Nothing, Int, Neighbors}=nothing)
     RPA(tba::AbstractTBA, interactions::Tuple{Vararg{Term}}; neighbors::Union{Nothing, Int, Neighbors}=nothing)
     RPA(lattice::AbstractLattice, hilbert::Hilbert, terms::Tuple{Vararg{Term}}, interactions::Tuple{Vararg{Term}}; neighbors::Union{Nothing, Int, Neighbors}=nothing)
+    RPA(tba::AbstractTBA{K, <:AnalyticalExpression}, hilbert::Hilbert, interactions::Term...; neighbors::Union{Nothing, Int, Neighbors}=nothing) where {K<:TBAKind}
     RPA(tba::AbstractTBA{K, <:AnalyticalExpression}, hilbert::Hilbert, interactions::Tuple{Vararg{Term}}; neighbors::Union{Nothing, Int, Neighbors}=nothing) where {K<:TBAKind}
 
 Construct an `RPA` type.
 """
+@inline RPA(tba::AbstractTBA, interactions::Term...; neighbors::Union{Nothing, Int, Neighbors}=nothing) = RPA(tba, interactions; neighbors=neighbors)
 function RPA(tba::AbstractTBA, interactions::Tuple{Vararg{Term}}; neighbors::Union{Nothing, Int, Neighbors}=nothing)
     @assert tba.H.operators.boundary==plain "RPA error: unsupported boundary condition."
     table = Table(tba.H.hilbert, OperatorUnitToTuple(:site, :orbital, :spin))
@@ -199,6 +202,7 @@ end
 @inline function RPA(lattice::AbstractLattice, hilbert::Hilbert, terms::Tuple{Vararg{Term}}, interactions::Tuple{Vararg{Term}}; neighbors::Union{Nothing, Int, Neighbors}=nothing)
     return RPA(TBA(lattice, hilbert, terms; neighbors=neighbors), interactions)
 end
+@inline RPA(tba::AbstractTBA{K, <:AnalyticalExpression}, hilbert::Hilbert, interactions::Term...; neighbors::Union{Nothing, Int, Neighbors}=nothing) where {K<:TBAKind} = RPA(tba, hilbert, interactions; neighbors=neighbors)
 function RPA(tba::AbstractTBA{K, <:AnalyticalExpression}, hilbert::Hilbert, interactions::Tuple{Vararg{Term}}; neighbors::Union{Nothing, Int, Neighbors}=nothing) where {K<:TBAKind}
     K<:Fermionic{:BdG} && @warn "the table of tba should be (:nambu, *, *, *) where * denotes other degrees of freedom."
     table = Table(hilbert, OperatorUnitToTuple(:site, :orbital, :spin))
@@ -262,8 +266,8 @@ Construct a `ParticleHoleSusceptibility` type.
 end
 
 @inline function initialize(phs::ParticleHoleSusceptibility, rpa::RPA)
-    x = collect(Float64, 0:(length(phs.reciprocalspace)-1))
-    y = collect(Float64, phs.energies)
+    x = phs.reciprocalspace
+    y = phs.energies
     z = zeros(ComplexF64, length(y), length(x))
     z₀ = zeros(ComplexF64, length(y), length(x))
     return (x, y, z, z₀)
@@ -499,73 +503,42 @@ end
 """
     @recipe plot(pack::Tuple{Algorithm{<:RPA}, Assignment{<:ParticleHoleSusceptibility}}, mode::Symbol=:χ)
 
-Define the recipe for the visualization of particle-hole susceptibilities.
+Define the recipe for the visualization of particle-hole susceptibilities along a path.
 """
 @recipe function plot(pack::Tuple{Algorithm{<:RPA}, Assignment{<:ParticleHoleSusceptibility}}, mode::Symbol=:χ)
-    title --> nameof(pack[1], pack[2])
-    titlefontsize --> 10
-    legend --> true
     @assert mode in (:χ, :χ0) "plot error: mode must be one of (:χ, :χ0)."
+    title --> nameof(pack...)
     if mode == :χ
-        χim0 = imag.(pack[2].data[3])/pi
+        z = imag.(pack[2].data[3])/pi
         colorbar_title := "χ(q, ω)"
-    elseif mode == :χ0
-        χim0 = imag.(pack[2].data[4])/pi
+    else
+        z = imag.(pack[2].data[4])/pi
         colorbar_title := "χ₀(q, ω)"
     end
-    clims = extrema(χim0)
     xlabel := "q"
     ylabel := "ω"
-    @series begin
-        seriestype := :heatmap
-        clims --> clims
-        pack[2].data[1], pack[2].data[2], χim0
-    end
+    pack[2].data[1], pack[2].data[2], z
 end
 
 """
     @recipe plot(pack::Tuple{Algorithm{<:RPA}, Assignment{<:ParticleHoleSusceptibility}}, ecut::Float64, dE::Float64=1e-3, mode::Symbol=:χ, reim::Symbol=:re)
 
+Define the recipe for the visualization of particle-hole susceptibilities at an energy cut.
 """
 @recipe function plot(pack::Tuple{Algorithm{<:RPA}, Assignment{<:ParticleHoleSusceptibility}}, ecut::Float64, dE::Float64=1e-3, mode::Symbol=:χ, reim::Symbol=:re)
-    title --> nameof(pack[1], pack[2])
-    titlefontsize --> 10
-    xlabel --> "q₁"
-    ylabel --> "q₂"
-    aspect_ratio := :equal
+    @assert isa(pack[2].action.reciprocalspace, Union{BrillouinZone, ReciprocalZone}) "plot error: please input an instance of BrillouinZone/ReciprocalZone."
+    @assert reim in (:re, :im) "plot error: reim must be one of (:re, :im)."
+    @assert mode in (:χ, :χ0) "plot error: mode must be one of (:χ, :χ0)."
+    title --> nameof(pack...)
     colorbar_title := string(reim==:re ? "Re" : "Im", mode, "(q, ω=", decimaltostr(ecut), ")")
-    @series begin
-        seriestype := :heatmap
-        data = spectralecut(pack[2], ecut, dE, mode)
-        reim==:re && (data = (data[1], data[2], real.(data[3])))
-        reim==:im && (data = (data[1], data[2], imag.(data[3])/pi))
-        clims --> extrema(data[3])
-        xlims --> (minimum(data[1]), maximum(data[1]))
-        ylims --> (minimum(data[2]), maximum(data[2]))
-        data[1], data[2], data[3]
-    end
-end
-function spectralecut(ass::Assignment{<:ParticleHoleSusceptibility}, ecut::Float64, dE::Float64, mode::Symbol=:χ)
-    @assert isa(ass.action.reciprocalspace, ReciprocalZone) "spectralecut error: please input an instance of ReciprocalZone."
-    energies = ass.data[2]
-    f(x) = abs(x-ecut) <= dE ? true : false
-    idx = findall(f, energies)
-    intensity = mode==:χ ? ass.data[3] : ass.data[4]
-    dims = Int[]
-    seg = []
-    reciprocals = []
-    for (i, bound) in enumerate(ass.action.reciprocalspace.bounds)
-        if bound.length > 1
-            push!(dims, bound.length)
-            push!(seg, bound)
-            push!(reciprocals, ass.action.reciprocalspace.reciprocals[i])
-        end
-    end
-    @assert length(dims)==2 "spectralecut error: the k points is not in a plane."
-    y = collect(seg[2])*norm(reciprocals[2]) #collect(Float64, 0:(dims[2]-1))
-    x = collect(seg[1])*norm(reciprocals[1]) #collect(Float64, 0:(dims[1]-1))
-    z = reshape(sum(intensity[idx, :], dims=1), reverse(dims)...)
-    return (x, y, z)
+    intensity = mode==:χ ? pack[2].data[3] : pack[2].data[4]
+    idx = findall(x->abs(x-ecut)<=dE ? true : false, pack[2].data[2])
+    dims = map(length, shape(pack[2].action.reciprocalspace))
+    @assert length(dims)==2 "plot error: the k points is not in a plane."
+    z = reshape(sum(intensity[idx, :], dims=1), dims...)
+    reim==:re && (z = real.(z))
+    reim==:im && (z = imag.(z)/pi)
+    pack[2].action.reciprocalspace, z
 end
 
 # eigen problem of RPA
@@ -593,14 +566,7 @@ Construct a `EigenRPA` type. Attribute `options` contains `(gauge=:icoordinate, 
 @inline function EigenRPA(reciprocalspace::ReciprocalSpace, brillouinzone::BrillouinZone; eigvals_only::Bool=true, options...)
     return EigenRPA(reciprocalspace, brillouinzone, eigvals_only, convert(Dict{Symbol, Any}, options))
 end
-
-@inline function initialize(erpa::EigenRPA, rpa::RPA)
-    x = collect(Float64, 0:(length(erpa.reciprocalspace)-1))
-    eigvals = Vector{ComplexF64}[]
-    eigvecs = Matrix{ComplexF64}[]
-    o2bs = Matrix{ComplexF64}[]
-    return x, eigvals, eigvecs, o2bs
-end
+@inline initialize(erpa::EigenRPA, rpa::RPA) = (erpa.reciprocalspace, Vector{ComplexF64}[], Matrix{ComplexF64}[], Matrix{ComplexF64}[])
 function run!(rpa::Algorithm{<:RPA}, erpa::Assignment{<:EigenRPA})
     int, tba = rpa.frontend.interactions, rpa.frontend.tba
     n = length(int.table)
@@ -767,33 +733,26 @@ end
 # end
 
 """
-    @recipe plot(pack::Tuple{Algorithm{<:RPA}, Assignment{<:EigenRPA}})
+    @recipe plot(pack::Tuple{Algorithm{<:RPA}, Assignment{<:EigenRPA}}, reim::Symbol=:re)
 
 Define the recipe for the visualization of particle-hole susceptibilities.
 """
-@recipe function plot(pack::Tuple{Algorithm{<:RPA}, Assignment{<:EigenRPA}}, reim::Symbol=:real)
-    title --> nameof(pack[1], pack[2])
-    titlefontsize --> 10
-    legend --> false
-    n = length(pack[2].data[2][end])
-    nq = length(pack[2].data[2])
-    eigvals = zeros(ComplexF64, nq, n)
+@recipe function plot(pack::Tuple{Algorithm{<:RPA}, Assignment{<:EigenRPA}}, reim::Symbol=:re)
+    @assert reim in (:re, :im) "plot error: reim must be one of (:re, :im)."
+    title --> nameof(pack...)
+    eigvals = zeros(ComplexF64, length(pack[2].data[2]), length(pack[2].data[2][end]))
     for (i, v) in enumerate(pack[2].data[2])
         eigvals[i, :] = v
     end
-    values = reim==:real ? real.(eigvals) : imag.(eigvals)
+    values = reim==:re ? real.(eigvals) : imag.(eigvals)
     xlabel := "q"
     ylabel := "ω"
-    minorgrid --> true
-    showaxis --> :yes
     @series begin
         seriestype := :path
         pack[2].data[1], values
     end
-    @series begin
-        seriestype := :scatter
-        pack[2].data[1], values
-    end
+    seriestype := :scatter
+    pack[2].data[1], values
 end
 
 end # module

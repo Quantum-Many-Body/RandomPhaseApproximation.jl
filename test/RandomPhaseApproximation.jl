@@ -106,7 +106,7 @@ end
     lattice = Lattice([0.0, 0.0]; vectors=[[1.0, 0.0], [0.0, 1.0]])
     hilbert = Hilbert(site=>Fock{:f}(1, 2) for site in 1:length(lattice))
     parameters = Parameters{(:t, :Δ)}(0.4, 0.4*0.299)
-    rpa = Algorithm(:dx²y², RPA(TBA{Fermionic{:BdG}}(lattice, hamiltonian, parameters), hilbert, (Hubbard(:U, 0.4),); neighbors=1))
+    rpa = Algorithm(:dx²y², RPA(TBA{Fermionic{:BdG}}(lattice, hamiltonian, parameters), hilbert, Hubbard(:U, 0.4); neighbors=1))
     brillouinzone = BrillouinZone(reciprocals(lattice), 16)
     reciprocalzone = ReciprocalZone(reciprocals(lattice), -1=>1, -1=>1; length=33, ends=(true, true))
     s⁺ = expand(Onsite(:s⁺, 1.0, MatrixCoupling(:, FID, :, σ"+", :)), bonds(lattice, 0), hilbert)

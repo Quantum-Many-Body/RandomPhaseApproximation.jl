@@ -49,39 +49,27 @@ Then, calculate the spin excitation spectra:
 # define the first Brillouin zone and the high-symmetry path in the reciprocal space
 nk = 12
 brillouinzone = BrillouinZone(reciprocals(lattice), 12)
-path, = selectpath(
-    brillouinzone, (0, 0)=>(1, 0), (1, 0)=>(0, 1);
-    ends=((true, false), (true, true))
-)
+path = selectpath(
+    brillouinzone, (0, 0), (1, 0), (0, 1);
+    labels=("(0, 0)", "(π, π)", "(-π, π)")
+)[1]
 
 # define the particle-hole channel operators
 s⁺ = expand(Onsite(:s⁺, 1.0, MatrixCoupling(:, FID, :, σ"+", :)), bonds(lattice, 0), hilbert)
 s⁻ = expand(Onsite(:s⁻, 1.0, MatrixCoupling(:, FID, :, σ"-", :)), bonds(lattice, 0), hilbert)
 sᶻ = expand(Onsite(:sᶻ, 0.5, MatrixCoupling(:, FID, :, σ"z", :)), bonds(lattice, 0), hilbert)
 
-# define and compute the transverse spin-spin susceptibility
+# define and compute transverse spin-spin susceptibility
 χ⁺⁻ = rpa(
     :χ⁺⁻,
     ParticleHoleSusceptibility(
-        path,
-        brillouinzone,
-        range(0.0, 4.0, length=200),
-        ([s⁺], [s⁻]);
-        η=0.02,
-        gauge=:rcoordinate,
-        save=false
+        path, brillouinzone, range(0.0, 4.0, length=200), ([s⁺], [s⁻]);
+        η=0.02, gauge=:rcoordinate, save=false
     )
 )
 
 # plot the spectra of transverse spin excitations, i.e. Im[χ⁺⁻(q, ω)]/π
-plot(
-    χ⁺⁻,
-    xticks=(
-        [0, 6, 12, 18, 25],
-        ["(0, 0)", "(π/2, π/2)", "(π, π)", "(0, π)", "(-π, π)"]
-    ),
-    clims=(0, 5)
-)
+plot(χ⁺⁻; clims=(0, 5))
 ```
 
 ```@example piflux
@@ -89,51 +77,24 @@ plot(
 χᶻᶻ = rpa(
     :χᶻᶻ,
     ParticleHoleSusceptibility(
-        path,
-        brillouinzone,
-        range(0.0, 4.0, length=200),
-        ([sᶻ], [sᶻ]);
-        η=0.02,
-        findk=true
+        path, brillouinzone, range(0.0, 4.0, length=200), ([sᶻ], [sᶻ]);
+        η=0.02, findk=true
     )
 )
 
 # plot the spectra of longitudinal spin excitations, i.e. Im[χᶻᶻ(q, ω)]/π
-plot(
-    χᶻᶻ;
-    xticks=(
-        [0, 6, 12, 18, 25],
-        ["(0, 0)", "(π/2, π/2)", "(π, π)", "(0, π)", "(-π, π)"]
-    ),
-    clims=(0, 5)
-)
+plot(χᶻᶻ; clims=(0, 5))
 ```
 
 The bare spin-spin correlation functions are shown as follows:
 ```@example piflux
 # plot Im[χ⁺⁻₀(q, ω)]/π
-plot(
-    χ⁺⁻,
-    :χ0;
-    xticks=(
-        [0, 6, 12, 18, 25],
-        ["(0, 0)", "(π/2, π/2)", "(π, π)", "(0, π)", "(-π, π)"]
-    ),
-    clims=(0, 5)
-)
+plot(χ⁺⁻, :χ0; clims=(0, 5))
 ```
 
 ```@example piflux
 # plot Im[χᶻᶻ₀(q, ω)]/π
-plot(
-    χᶻᶻ,
-    :χ0;
-    xticks=(
-        [0, 6, 12, 18, 25],
-        ["(0, 0)", "(π/2, π/2)", "(π, π)", "(0, π)", "(-π, π)"]
-    ),
-    clims=(0, 5)
-)
+plot(χᶻᶻ, :χ0; clims=(0, 5))
 ```
 
 ## Electronic energy bands
@@ -143,17 +104,10 @@ The electronic energy bands of the model:
 ```@example piflux
 # define a path in the Brillouin zone
 path = ReciprocalPath(
-    reciprocals(lattice),
-    (0//2, 0//2)=>(2//2, 0//2),
-    (2//2, 0//2)=>(0//2, 2//2);
+    reciprocals(lattice), (0, 0), (1, 0), (0, 1);
+    labels=("(0, 0)", "(π, π)", "(-π, π)"),
     length=50
 )
 ebs = Algorithm(:PiFluxAFM, rpa.frontend.tba)(:EB, EnergyBands(path))
-plot(
-    ebs;
-    xticks=(
-        [0, 25, 50, 75, 100],
-        ["(0, 0)", "(π/2, π/2)", "(π, π)", "(0, π)", "(-π, π)"]
-    )
-)
+plot(ebs)
 ```
