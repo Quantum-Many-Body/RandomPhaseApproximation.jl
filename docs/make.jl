@@ -5,7 +5,7 @@ DocMeta.setdocmeta!(RandomPhaseApproximation, :DocTestSetup, :(using RandomPhase
 
 makedocs(;
     modules=[RandomPhaseApproximation],
-    authors="wwangnju <wwangnju@163.com>",
+    authors="wwangnju <wwangnju@163.com> and contributors",
     repo="https://github.com/Quantum-Many-Body/RandomPhaseApproximation.jl/blob/{commit}{path}#{line}",
     sitename="RandomPhaseApproximation.jl",
     format=Documenter.HTML(;
@@ -20,7 +20,8 @@ makedocs(;
             "examples/Introduction.md",
             "examples/SquarePiFlux.md",
             "examples/Squaredx2y2Wave.md",
-        ]
+        ],
+        "Manual" => "manual.md",
     ],
 )
 
