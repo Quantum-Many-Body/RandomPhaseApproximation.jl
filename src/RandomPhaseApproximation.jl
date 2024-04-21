@@ -183,33 +183,33 @@ end
 end
 
 """
-    RPA(tba::AbstractTBA, interactions::Term...; neighbors::Union{Nothing, Int, Neighbors}=nothing)
-    RPA(tba::AbstractTBA, interactions::Tuple{Vararg{Term}}; neighbors::Union{Nothing, Int, Neighbors}=nothing)
-    RPA(lattice::AbstractLattice, hilbert::Hilbert, terms::Tuple{Vararg{Term}}, interactions::Tuple{Vararg{Term}}; neighbors::Union{Nothing, Int, Neighbors}=nothing)
-    RPA(tba::AbstractTBA{K, <:AnalyticalExpression}, hilbert::Hilbert, interactions::Term...; neighbors::Union{Nothing, Int, Neighbors}=nothing) where {K<:TBAKind}
-    RPA(tba::AbstractTBA{K, <:AnalyticalExpression}, hilbert::Hilbert, interactions::Tuple{Vararg{Term}}; neighbors::Union{Nothing, Int, Neighbors}=nothing) where {K<:TBAKind}
+    RPA(tba::AbstractTBA, interactions::Union{Term, Tuple{Term, Vararg{Term}}}; neighbors::Union{Nothing, Int, Neighbors}=nothing)
+    RPA(lattice::AbstractLattice, hilbert::Hilbert, terms::Union{Term, Tuple{Term, Vararg{Term}}}, interactions::Union{Term, Tuple{Term, Vararg{Term}}}; neighbors::Union{Nothing, Int, Neighbors}=nothing)
+    RPA(tba::AbstractTBA{K, <:AnalyticalExpression}, hilbert::Hilbert, interactions::Union{Term, Tuple{Term, Vararg{Term}}}; neighbors::Union{Nothing, Int, Neighbors}=nothing) where {K<:TBAKind}
 
 Construct an `RPA` type.
 """
-@inline RPA(tba::AbstractTBA, interactions::Term...; neighbors::Union{Nothing, Int, Neighbors}=nothing) = RPA(tba, interactions; neighbors=neighbors)
-function RPA(tba::AbstractTBA, interactions::Tuple{Vararg{Term}}; neighbors::Union{Nothing, Int, Neighbors}=nothing)
+function RPA(tba::AbstractTBA, interactions::Union{Term, Tuple{Term, Vararg{Term}}}; neighbors::Union{Nothing, Int, Neighbors}=nothing)
     @assert tba.H.operators.boundary==plain "RPA error: unsupported boundary condition."
+    interactions = wrapper(interactions)
     table = Table(tba.H.hilbert, OperatorUnitToTuple(:site, :orbital, :spin))
     isnothing(neighbors) && (neighbors = maximum(term->term.bondkind, interactions))
-    int = OperatorGenerator(interactions, bonds(tba.lattice, neighbors), tba.H.hilbert; table=table)
+    int = OperatorGenerator(interactions, bonds(tba.lattice, neighbors), tba.H.hilbert, plain, table; half=false)
     return RPA(tba, int)
 end
-@inline function RPA(lattice::AbstractLattice, hilbert::Hilbert, terms::Tuple{Vararg{Term}}, interactions::Tuple{Vararg{Term}}; neighbors::Union{Nothing, Int, Neighbors}=nothing)
+@inline function RPA(lattice::AbstractLattice, hilbert::Hilbert, terms::Union{Term, Tuple{Term, Vararg{Term}}}, interactions::Union{Term, Tuple{Term, Vararg{Term}}}; neighbors::Union{Nothing, Int, Neighbors}=nothing)
     return RPA(TBA(lattice, hilbert, terms; neighbors=neighbors), interactions)
 end
-@inline RPA(tba::AbstractTBA{K, <:AnalyticalExpression}, hilbert::Hilbert, interactions::Term...; neighbors::Union{Nothing, Int, Neighbors}=nothing) where {K<:TBAKind} = RPA(tba, hilbert, interactions; neighbors=neighbors)
-function RPA(tba::AbstractTBA{K, <:AnalyticalExpression}, hilbert::Hilbert, interactions::Tuple{Vararg{Term}}; neighbors::Union{Nothing, Int, Neighbors}=nothing) where {K<:TBAKind}
+function RPA(tba::AbstractTBA{K, <:AnalyticalExpression}, hilbert::Hilbert, interactions::Union{Term, Tuple{Term, Vararg{Term}}}; neighbors::Union{Nothing, Int, Neighbors}=nothing) where {K<:TBAKind}
     K<:Fermionic{:BdG} && @warn "the table of tba should be (:nambu, *, *, *) where * denotes other degrees of freedom."
+    interactions = wrapper(interactions)
     table = Table(hilbert, OperatorUnitToTuple(:site, :orbital, :spin))
     isnothing(neighbors) && (neighbors = maximum(term->term.bondkind, interactions))
-    int = OperatorGenerator(interactions, bonds(tba.lattice, neighbors), hilbert; table=table)
+    int = OperatorGenerator(interactions, bonds(tba.lattice, neighbors), hilbert, plain, table; half=false)
     return RPA(tba, int)
 end
+@inline wrapper(x) = (x,)
+@inline wrapper(xs::Tuple) = xs
 
 """
     matrix(rpa::RPA, field::Symbol=:int; k=nothing, gauge=:icoordinate, kwargs...) -> Matrix

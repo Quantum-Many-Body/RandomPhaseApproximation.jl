@@ -1,7 +1,7 @@
 using LinearAlgebra: dot
 using Plots: plot, savefig
 using QuantumLattices: Algorithm, BrillouinZone, CompositeIndex, Coulomb, Fock, FID, Hilbert, Hopping, Hubbard, Index, InterOrbitalInterSpin, InterOrbitalIntraSpin, Lattice, MatrixCoupling, OperatorGenerator, OperatorUnitToTuple, Onsite, PairHopping, Parameters, ReciprocalZone, SpinFlip, Table
-using QuantumLattices: bonds, expand, icoordinate, reciprocals, selectpath, update!, @σ_str
+using QuantumLattices: plain, bonds, expand, icoordinate, reciprocals, selectpath, update!, @σ_str
 using RandomPhaseApproximation
 using RandomPhaseApproximation: fermifunc, isevenperm, issamesite
 using TightBindingApproximation: Fermionic, TBA
@@ -33,7 +33,7 @@ import QuantumLattices: dimension
     Jp = PairHopping(:Jp, jₕ)
     J₁ = Coulomb(:J₁, 0.5, 1, 1//4*(MatrixCoupling(:, FID, :, σ"x", :)^2+MatrixCoupling(:, FID, :, σ"y", :)^2+MatrixCoupling(:, FID, :, σ"z", :)^2))
     table = Table(hilbert, OperatorUnitToTuple(:site, :orbital, :spin))
-    gen = OperatorGenerator((U, U′, UmJ, J, Jp, J₁), bonds(lattice, 1), hilbert; half=false, table=table)
+    gen = OperatorGenerator((U, U′, UmJ, J, Jp, J₁), bonds(lattice, 1), hilbert, plain, table; half=false)
 
     δ = [icoordinate(bond) for bond in bonds(lattice, 1) if bond.kind==1]
     k = [0.1, 0.2]
